@@ -1,0 +1,17 @@
+[Unit]
+Description=sshttp - Secret Shell over HTTP
+After=network.target
+
+[Service]
+Type=simple
+User=eddison
+Group=eddison
+WorkingDirectory=/home/eddison/sshttp/server
+ExecStart=/usr/local/bin/sshttpd
+Restart=always
+RestartSec=5
+
+Environment=SHELL=/bin/bash
+
+[Install]
+WantedBy=multi-user.target

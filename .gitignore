@@ -1,0 +1,15 @@
+# Build artifacts
+server/sshttpd
+server/cmd/sshttpd/static/
+client/dist/
+client/node_modules/
+
+# Data
+data/
+
+# Certificates
+*.pem
+
+# IDE
+.idea/
+.vscode/
