@@ -343,7 +343,3 @@ make install
 3. Configure TLS (required for WebAuthn):
    - Set `SSHTTP_TLS_CERT` and `SSHTTP_TLS_KEY` to your certificate paths
    - Or use a reverse proxy that terminates TLS
-
-## License
-
-[Add your license here]
