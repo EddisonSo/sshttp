@@ -1,6 +1,6 @@
 # sshttp - Secure Shell over HTTP
 
-Interactive shell access over HTTPS using a browser/Electron client and FIDO2/WebAuthn authentication.
+Interactive shell access over HTTPS using a browser and FIDO2/WebAuthn authentication.
 
 ## Motivation
 
