@@ -58,19 +58,18 @@ export function useTerminal({ token, sessionId, onExit, onError, onFileProgress,
       onClose: () => {
         setConnected(false)
       },
+      onOpen: () => {
+        // Send initial size immediately on connection
+        const size = termRef.current?.fit()
+        if (size) {
+          conn.resize(size.cols, size.rows)
+        }
+        termRef.current?.focus()
+      },
     }, sessionId)
 
     connRef.current = conn
     setConnected(true)
-
-    // Send initial size after short delay
-    setTimeout(() => {
-      const size = termRef.current?.fit()
-      if (size) {
-        conn.resize(size.cols, size.rows)
-      }
-      termRef.current?.focus()
-    }, 100)
 
     return () => {
       conn.close()
@@ -83,9 +82,16 @@ export function useTerminal({ token, sessionId, onExit, onError, onFileProgress,
     connRef.current?.send(data)
   }, [])
 
-  // Handle resize
+  // Handle resize with debouncing
+  const resizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const handleResize = useCallback((cols: number, rows: number) => {
-    connRef.current?.resize(cols, rows)
+    if (resizeTimeoutRef.current) {
+      clearTimeout(resizeTimeoutRef.current)
+    }
+    resizeTimeoutRef.current = setTimeout(() => {
+      connRef.current?.resize(cols, rows)
+      resizeTimeoutRef.current = null
+    }, 50)
   }, [])
 
   // Handle file drop - upload files sequentially

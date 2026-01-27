@@ -279,18 +279,9 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("shell session started for user %s (session: %s)", claims.Username, session.ID)
 
-	// Send scrollback buffer to restore terminal state on reconnect
-	if scrollback := session.Scrollback(); len(scrollback) > 0 {
-		frame := make([]byte, 1+len(scrollback))
-		frame[0] = FrameStdout
-		copy(frame[1:], scrollback)
-		if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
-			log.Printf("websocket scrollback write error: %v", err)
-			return
-		}
-		// Trigger shell to redraw prompt after scrollback replay
-		session.Redraw()
-	}
+	// Scrollback is sent after the first resize to ensure correct terminal dimensions
+	scrollback := session.Scrollback()
+	scrollbackSent := len(scrollback) == 0 // Mark as sent if empty
 
 	// Channel to signal completion
 	done := make(chan struct{})
@@ -298,7 +289,7 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 	// Read from PTY, write to WebSocket
 	go func() {
 		defer close(done)
-		buf := make([]byte, 4096)
+		buf := make([]byte, 32*1024) // 32KB buffer
 		for {
 			n, err := session.Read(buf)
 			if err != nil {
@@ -350,8 +341,24 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 				if len(payload) >= 4 {
 					cols := binary.BigEndian.Uint16(payload[0:2])
 					rows := binary.BigEndian.Uint16(payload[2:4])
+
+					// Apply resize first so dimensions are correct
 					if err := session.Resize(cols, rows); err != nil {
 						log.Printf("resize error: %v", err)
+					}
+
+					// Send scrollback after first resize (correct dimensions now set)
+					if !scrollbackSent {
+						scrollbackSent = true
+						if len(scrollback) > 0 {
+							frame := make([]byte, 1+len(scrollback))
+							frame[0] = FrameStdout
+							copy(frame[1:], scrollback)
+							if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+								log.Printf("websocket scrollback write error: %v", err)
+							}
+						}
+						scrollback = nil // Free memory
 					}
 				}
 

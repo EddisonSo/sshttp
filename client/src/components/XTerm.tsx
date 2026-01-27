@@ -62,9 +62,24 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
     terminalRef.current?.focus()
   }, [onFileDrop])
 
+  // Queue for serializing writes to avoid race conditions
+  const writeQueue = useRef<string[]>([])
+  const writingRef = useRef(false)
+
+  const processWriteQueue = useCallback(() => {
+    if (writingRef.current || writeQueue.current.length === 0) return
+    writingRef.current = true
+    const data = writeQueue.current.shift()!
+    terminalRef.current?.write(data, () => {
+      writingRef.current = false
+      processWriteQueue()
+    })
+  }, [])
+
   useImperativeHandle(ref, () => ({
     write: (data: string) => {
-      terminalRef.current?.write(data)
+      writeQueue.current.push(data)
+      processWriteQueue()
     },
     fit: () => {
       fitAddonRef.current?.fit()
@@ -98,7 +113,7 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
 
     terminal.open(containerRef.current)
 
-    // Try to load WebGL addon for better performance
+    // Try to load WebGL addon for better performance, fallback to canvas renderer
     try {
       const webglAddon = new WebglAddon()
       terminal.loadAddon(webglAddon)

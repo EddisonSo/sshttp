@@ -38,6 +38,7 @@ export interface ShellCallbacks {
   onExit: (code: number) => void
   onError: (error: Error) => void
   onClose: () => void
+  onOpen?: () => void
 }
 
 export function connectShell(token: string, callbacks: ShellCallbacks, sessionId?: string): ShellConnection {
@@ -50,7 +51,8 @@ export function connectShell(token: string, callbacks: ShellCallbacks, sessionId
   const ws = new WebSocket(wsUrl)
   ws.binaryType = 'arraybuffer'
 
-  const textDecoder = new TextDecoder()
+  // TextDecoder for converting binary to string
+  const textDecoder = new TextDecoder('utf-8')
 
   // File transfer state
   let fileTransferCallbacks: FileTransferCallbacks | null = null
@@ -60,7 +62,7 @@ export function connectShell(token: string, callbacks: ShellCallbacks, sessionId
   let fileTransferTotalBytes = 0
 
   ws.onopen = () => {
-    // Connection established
+    callbacks.onOpen?.()
   }
 
   ws.onmessage = (event) => {
@@ -72,7 +74,8 @@ export function connectShell(token: string, callbacks: ShellCallbacks, sessionId
 
     switch (frameType) {
       case FrameType.STDOUT:
-        callbacks.onData(textDecoder.decode(payload))
+        // Use stream mode to handle multi-byte characters split across chunks
+        callbacks.onData(textDecoder.decode(payload, { stream: true }))
         break
 
       case FrameType.EXIT:
