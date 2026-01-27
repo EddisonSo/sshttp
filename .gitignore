@@ -13,3 +13,5 @@ data/
 # IDE
 .idea/
 .vscode/
+
+claude.md

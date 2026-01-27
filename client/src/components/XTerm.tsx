@@ -62,24 +62,9 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
     terminalRef.current?.focus()
   }, [onFileDrop])
 
-  // Queue for serializing writes to avoid race conditions
-  const writeQueue = useRef<string[]>([])
-  const writingRef = useRef(false)
-
-  const processWriteQueue = useCallback(() => {
-    if (writingRef.current || writeQueue.current.length === 0) return
-    writingRef.current = true
-    const data = writeQueue.current.shift()!
-    terminalRef.current?.write(data, () => {
-      writingRef.current = false
-      processWriteQueue()
-    })
-  }, [])
-
   useImperativeHandle(ref, () => ({
     write: (data: string) => {
-      writeQueue.current.push(data)
-      processWriteQueue()
+      terminalRef.current?.write(data)
     },
     fit: () => {
       fitAddonRef.current?.fit()
