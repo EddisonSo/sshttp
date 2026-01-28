@@ -7,6 +7,7 @@ interface UseTerminalOptions {
   sessionId?: string
   onExit?: (code: number) => void
   onError?: (error: Error) => void
+  onClose?: (reason?: string) => void
   onFileProgress?: (bytesUploaded: number, totalBytes: number) => void
   onFileComplete?: (filename: string) => void
   onFileError?: (error: string) => void
@@ -19,7 +20,7 @@ interface FileUploadState {
   totalBytes: number
 }
 
-export function useTerminal({ token, sessionId, onExit, onError, onFileProgress, onFileComplete, onFileError }: UseTerminalOptions) {
+export function useTerminal({ token, sessionId, onExit, onError, onClose, onFileProgress, onFileComplete, onFileError }: UseTerminalOptions) {
   const termRef = useRef<XTermHandle>(null)
   const connRef = useRef<ShellConnection | null>(null)
   const [connected, setConnected] = useState(false)
@@ -29,11 +30,13 @@ export function useTerminal({ token, sessionId, onExit, onError, onFileProgress,
   // Store callbacks in refs to avoid reconnection on callback changes
   const onExitRef = useRef(onExit)
   const onErrorRef = useRef(onError)
+  const onCloseRef = useRef(onClose)
   const onFileProgressRef = useRef(onFileProgress)
   const onFileCompleteRef = useRef(onFileComplete)
   const onFileErrorRef = useRef(onFileError)
   onExitRef.current = onExit
   onErrorRef.current = onError
+  onCloseRef.current = onClose
   onFileProgressRef.current = onFileProgress
   onFileCompleteRef.current = onFileComplete
   onFileErrorRef.current = onFileError
@@ -55,8 +58,9 @@ export function useTerminal({ token, sessionId, onExit, onError, onFileProgress,
         setConnected(false)
         onErrorRef.current?.(err)
       },
-      onClose: () => {
+      onClose: (reason) => {
         setConnected(false)
+        onCloseRef.current?.(reason)
       },
       onOpen: () => {
         // Send initial size immediately on connection

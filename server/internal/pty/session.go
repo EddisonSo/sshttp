@@ -100,6 +100,7 @@ type Session struct {
 	closed     bool
 	attached   bool
 	scrollback *RingBuffer
+	onKick     func() // Called when this connection is kicked by a new one
 }
 
 type SessionManager struct {
@@ -269,15 +270,23 @@ func (m *SessionManager) ListUserSessions(userID string) []SessionInfo {
 	return sessions
 }
 
-// Attach marks a session as attached (forces detach of previous connection)
-func (s *Session) Attach() bool {
+// Attach marks a session as attached (kicks out previous connection if any)
+func (s *Session) Attach(onKick func()) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return false
 	}
-	// Force attach - if already attached, the old connection is likely dead (e.g., page refresh)
+	// If already attached, kick out the old connection
+	if s.attached && s.onKick != nil {
+		// Call outside the lock to avoid deadlock
+		kickCallback := s.onKick
+		s.mu.Unlock()
+		kickCallback()
+		s.mu.Lock()
+	}
 	s.attached = true
+	s.onKick = onKick
 	return true
 }
 

@@ -37,7 +37,7 @@ export interface ShellCallbacks {
   onData: (data: string) => void
   onExit: (code: number) => void
   onError: (error: Error) => void
-  onClose: () => void
+  onClose: (reason?: string) => void
   onOpen?: () => void
 }
 
@@ -121,8 +121,8 @@ export function connectShell(token: string, callbacks: ShellCallbacks, sessionId
     callbacks.onError(new Error('WebSocket error'))
   }
 
-  ws.onclose = () => {
-    callbacks.onClose()
+  ws.onclose = (event) => {
+    callbacks.onClose(event.reason || undefined)
     // Reject any pending file transfer
     if (fileTransferReject) {
       fileTransferReject(new Error('Connection closed'))

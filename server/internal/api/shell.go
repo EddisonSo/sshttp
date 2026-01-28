@@ -257,9 +257,15 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !session.Attach() {
+	// Channel to signal this connection was kicked by a new one
+	kicked := make(chan struct{})
+
+	if !session.Attach(func() {
+		// Called when a new connection kicks this one out
+		close(kicked)
+	}) {
 		conn.WriteMessage(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "session already attached"))
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "session closed"))
 		return
 	}
 
@@ -285,6 +291,19 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 
 	// Channel to signal completion
 	done := make(chan struct{})
+
+	// Handle being kicked by a new connection
+	go func() {
+		select {
+		case <-kicked:
+			log.Printf("connection kicked for user %s (session: %s)", claims.Username, session.ID)
+			conn.WriteMessage(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "kicked by new connection"))
+			conn.Close()
+		case <-done:
+			// PTY exited normally, nothing to do
+		}
+	}()
 
 	// Read from PTY, write to WebSocket
 	go func() {
