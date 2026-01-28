@@ -184,6 +184,22 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
         const webglAddon = new WebglAddon()
         terminal.loadAddon(webglAddon)
         webglAddonRef.current = webglAddon
+
+        // Clear texture atlas after delays to fix any glyphs
+        // that were cached before the font was fully applied
+        // Multiple clears catch glyphs rendered at different times
+        const clearAtlas = () => {
+          if (webglAddonRef.current) {
+            try {
+              webglAddonRef.current.clearTextureAtlas()
+            } catch {
+              // Ignore if not supported
+            }
+          }
+        }
+        setTimeout(clearAtlas, 50)
+        setTimeout(clearAtlas, 200)
+        setTimeout(clearAtlas, 500)
       } catch {
         // WebGL not available, fallback to canvas renderer
         webglAddonRef.current = null
