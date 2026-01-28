@@ -78,8 +78,28 @@ export function useTerminal({ token, sessionId, onExit, onError, onFileProgress,
   }, [token, sessionId])
 
   // Handle user input
+  // Filter out terminal response sequences that shouldn't be sent as user input
   const handleData = useCallback((data: string) => {
-    connRef.current?.send(data)
+    // Filter out terminal query responses:
+    // - DA1 responses: \e[?...c (e.g., \e[?1;2c)
+    // - DA2 responses: \e[>...c
+    // - Cursor position reports: \e[row;colR
+    // - DECRPM (mode reports): \e[?...;...$y
+    // - Focus reports: \e[I or \e[O
+    // - DCS responses: \eP...\e\ (device control strings)
+    // - OSC responses: \e]...\x07 or \e]...\e\
+    const filtered = data
+      .replace(/\x1b\[\?[\d;]*c/g, '')              // DA1
+      .replace(/\x1b\[>[\d;]*c/g, '')               // DA2
+      .replace(/\x1b\[\d+;\d+R/g, '')               // CPR (cursor position report)
+      .replace(/\x1b\[\?[\d;]+\$y/g, '')            // DECRPM (mode report)
+      .replace(/\x1b\[[IO]/g, '')                   // Focus in/out
+      .replace(/\x1bP[^\x1b]*\x1b\\/g, '')          // DCS (device control string)
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC (operating system command)
+      .replace(/\x1b\[[\d;]*_/g, '')                // APC-like sequences
+    if (filtered) {
+      connRef.current?.send(filtered)
+    }
   }, [])
 
   // Handle resize with debouncing

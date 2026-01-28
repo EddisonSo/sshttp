@@ -89,6 +89,23 @@ func (s *Server) Router() http.Handler {
 			r.Post("/keys/rename", s.handleRenameKey)
 			r.Post("/keys/add/begin", s.handleAddKeyBegin)
 			r.Post("/keys/add/finish", s.handleAddKeyFinish)
+
+			// Customization
+			r.Get("/prefs", s.handleGetPrefs)
+
+			// Themes
+			r.Get("/themes", s.handleListThemes)
+			r.Get("/themes/get", s.handleGetTheme)
+			r.Post("/themes/save", s.handleSaveTheme)
+			r.Post("/themes/delete", s.handleDeleteTheme)
+			r.Post("/themes/active", s.handleSetActiveTheme)
+
+			// Fonts
+			r.Get("/fonts", s.handleListFonts)
+			r.Get("/fonts/get", s.handleGetFont)
+			r.Post("/fonts/upload", s.handleUploadFont)
+			r.Post("/fonts/delete", s.handleDeleteFont)
+			r.Post("/fonts/active", s.handleSetActiveFont)
 		})
 	})
 

@@ -1,27 +1,19 @@
 @import "tailwindcss";
 
-/* Adwaita Mono Nerd Font (bundled) */
-@font-face {
-  font-family: 'AdwaitaMono NF';
-  src: url('/fonts/AdwaitaMonoNerdFont-Regular.ttf') format('truetype');
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'AdwaitaMono NF';
-  src: url('/fonts/AdwaitaMonoNerdFont-Bold.ttf') format('truetype');
-  font-weight: 700;
-  font-style: normal;
-  font-display: swap;
+:root {
+  --theme-bg: #1a1a2e;
+  --theme-fg: #eaeaea;
+  --theme-bg-secondary: #292942;
+  --theme-bg-tertiary: #333350;
+  --theme-border: #3d3d5c;
+  --theme-fg-muted: rgba(234, 234, 234, 0.6);
 }
 
 body {
   margin: 0;
   padding: 0;
-  background-color: #1a1a2e;
-  color: #eaeaea;
+  background-color: var(--theme-bg);
+  color: var(--theme-fg);
   font-family: system-ui, -apple-system, sans-serif;
 }
 

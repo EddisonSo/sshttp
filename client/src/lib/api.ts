@@ -71,6 +71,30 @@ export interface CreateSessionResponse {
   name: string
 }
 
+export interface ThemeInfo {
+  name: string
+}
+
+export interface ListThemesResponse {
+  themes: ThemeInfo[]
+  activeTheme: string
+}
+
+export interface FontInfo {
+  name: string
+  ext: string  // File extension (ttf, otf, woff, woff2)
+}
+
+export interface ListFontsResponse {
+  fonts: FontInfo[]
+  activeFont: string
+}
+
+export interface UserPrefs {
+  activeTheme: string
+  activeFont: string
+}
+
 class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message)
@@ -184,6 +208,87 @@ export const api = {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
       body: JSON.stringify({ id }),
+    }),
+
+  // Customization
+  getPrefs: (token: string) =>
+    request<UserPrefs>('/settings/prefs', {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+
+  // Themes
+  listThemes: (token: string) =>
+    request<ListThemesResponse>('/settings/themes', {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+
+  getTheme: async (token: string, name: string): Promise<string> => {
+    const res = await fetch(`${API_BASE}/settings/themes/get?name=${encodeURIComponent(name)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) {
+      throw new ApiError(res.status, await res.text())
+    }
+    return res.text()
+  },
+
+  saveTheme: (token: string, name: string, content: string) =>
+    request<void>('/settings/themes/save', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name, content }),
+    }),
+
+  deleteTheme: (token: string, name: string) =>
+    request<void>('/settings/themes/delete', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name }),
+    }),
+
+  setActiveTheme: (token: string, name: string) =>
+    request<void>('/settings/themes/active', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name }),
+    }),
+
+  // Fonts
+  listFonts: (token: string) =>
+    request<ListFontsResponse>('/settings/fonts', {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+
+  // Font URL (requires auth - loaded via JavaScript fetch)
+  getFontUrl: (name: string) =>
+    `${API_BASE}/settings/fonts/get?name=${encodeURIComponent(name)}`,
+
+  uploadFont: async (token: string, file: File): Promise<FontInfo> => {
+    const formData = new FormData()
+    formData.append('font', file)
+    const res = await fetch(`${API_BASE}/settings/fonts/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    })
+    if (!res.ok) {
+      throw new ApiError(res.status, await res.text())
+    }
+    return res.json()
+  },
+
+  deleteFont: (token: string, name: string) =>
+    request<void>('/settings/fonts/delete', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name }),
+    }),
+
+  setActiveFont: (token: string, name: string) =>
+    request<void>('/settings/fonts/active', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name }),
     }),
 }
 

@@ -85,11 +85,11 @@ export default function Login() {
     <div className="flex min-h-screen items-center justify-center">
       <div className="w-full max-w-md p-8">
         <h1 className="mb-2 text-center text-3xl font-bold">sshttp</h1>
-        <p className="mb-8 text-center text-gray-400">Secret Shell over HTTP</p>
+        <p className="mb-8 text-center text-[var(--theme-fg-muted)]">Secret Shell over HTTP</p>
 
         <div className="space-y-6">
           <div>
-            <label htmlFor="username" className="mb-2 block text-sm text-gray-400">
+            <label htmlFor="username" className="mb-2 block text-sm text-[var(--theme-fg-muted)]">
               Username
             </label>
             <input
@@ -98,7 +98,7 @@ export default function Login() {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               onKeyPress={handleKeyPress}
-              className="w-full rounded-lg border border-gray-600 bg-gray-800 px-4 py-3 text-white focus:border-blue-500 focus:outline-none"
+              className="w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-secondary)] px-4 py-3 text-[var(--theme-fg)] focus:border-blue-500 focus:outline-none"
               placeholder="Enter your username"
               disabled={status === 'loading'}
               autoFocus
@@ -117,7 +117,7 @@ export default function Login() {
             {status === 'loading' ? 'Authenticating...' : 'Login with Passkey'}
           </button>
 
-          <p className="text-center text-sm text-gray-500">
+          <p className="text-center text-sm text-[var(--theme-fg-muted)]">
             You will be prompted to authenticate using your registered passkey.
           </p>
         </div>

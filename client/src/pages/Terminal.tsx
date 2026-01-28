@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import XTerm from '../components/XTerm'
 import { useTerminal } from '../hooks/useTerminal'
 import { api } from '../lib/api'
+import { getActiveTheme, loadThemesFromServer } from '../lib/themes'
+import { getActiveFontName, getFontFamily, getFontSize, loadFontsFromServer } from '../lib/fonts'
+import type { TerminalTheme } from '../lib/itermThemeParser'
 
 interface Tab {
   id: string
@@ -18,6 +21,9 @@ interface Toast {
 function TerminalTab({
   token,
   sessionId,
+  theme,
+  fontFamily,
+  fontSize,
   onError,
   onExit,
   onFileComplete,
@@ -25,6 +31,9 @@ function TerminalTab({
 }: {
   token: string
   sessionId?: string
+  theme?: TerminalTheme
+  fontFamily?: string
+  fontSize?: number
   onError: () => void
   onExit: (code: number) => void
   onFileComplete?: (filename: string) => void
@@ -41,13 +50,13 @@ function TerminalTab({
 
   return (
     <div className="relative h-full w-full">
-      <XTerm ref={termRef} onData={handleData} onResize={handleResize} onFileDrop={handleFileDrop} />
+      <XTerm ref={termRef} onData={handleData} onResize={handleResize} onFileDrop={handleFileDrop} theme={theme} fontFamily={fontFamily} fontSize={fontSize} />
       {fileUpload && (
-        <div className="absolute bottom-4 right-4 rounded-lg bg-gray-800 px-4 py-3 shadow-lg">
-          <div className="mb-1 text-sm text-gray-300">
+        <div className="absolute bottom-4 right-4 rounded-lg bg-[var(--theme-bg-secondary)] px-4 py-3 shadow-lg">
+          <div className="mb-1 text-sm text-[var(--theme-fg)]">
             Uploading: {fileUpload.filename}
           </div>
-          <div className="h-2 w-48 overflow-hidden rounded-full bg-gray-700">
+          <div className="h-2 w-48 overflow-hidden rounded-full bg-[var(--theme-bg-tertiary)]">
             <div
               className="h-full bg-blue-500 transition-all duration-150"
               style={{
@@ -55,7 +64,7 @@ function TerminalTab({
               }}
             />
           </div>
-          <div className="mt-1 text-xs text-gray-400">
+          <div className="mt-1 text-xs text-[var(--theme-fg-muted)]">
             {Math.round(fileUpload.bytesUploaded / 1024)} / {Math.round(fileUpload.totalBytes / 1024)} KB
           </div>
         </div>
@@ -77,6 +86,11 @@ export default function Terminal() {
   const [newSessionName, setNewSessionName] = useState('')
   const [showCreatePrompt, setShowCreatePrompt] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
+  const [theme, setTheme] = useState<TerminalTheme>(() => getActiveTheme())
+  const [fontFamily, setFontFamily] = useState<string>(() => getFontFamily(getActiveFontName()))
+  const [fontSize, setFontSize] = useState<number>(() => getFontSize())
+  const [draggedTab, setDraggedTab] = useState<string | null>(null)
+  const [dragOverTab, setDragOverTab] = useState<string | null>(null)
 
   const addToast = useCallback((type: 'success' | 'error', message: string) => {
     const id = ++toastIdCounter
@@ -103,7 +117,40 @@ export default function Terminal() {
     }
     setToken(storedToken)
     loadSessions(storedToken)
+    loadCustomization(storedToken)
   }, [navigate])
+
+  const loadCustomization = async (t: string) => {
+    try {
+      // Load themes and fonts from server
+      const [, fontsData] = await Promise.all([
+        loadThemesFromServer(t),
+        loadFontsFromServer(t),
+      ])
+
+      // Update active theme/font from server
+      setTheme(getActiveTheme())
+      setFontFamily(getFontFamily(fontsData.activeFont || getActiveFontName()))
+    } catch (err) {
+      console.error('Failed to load customization:', err)
+    }
+  }
+
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'terminal-active-theme') {
+        setTheme(getActiveTheme())
+      }
+      if (e.key === 'terminal-active-font') {
+        setFontFamily(getFontFamily(getActiveFontName()))
+      }
+      if (e.key === 'terminal-font-size') {
+        setFontSize(getFontSize())
+      }
+    }
+    window.addEventListener('storage', handleStorageChange)
+    return () => window.removeEventListener('storage', handleStorageChange)
+  }, [])
 
   const loadSessions = async (t: string) => {
     try {
@@ -222,10 +269,53 @@ export default function Terminal() {
     }
   }
 
+  const handleDragStart = (e: React.DragEvent, tabId: string) => {
+    setDraggedTab(tabId)
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', tabId)
+  }
+
+  const handleDragOver = (e: React.DragEvent, tabId: string) => {
+    e.preventDefault()
+    if (draggedTab && draggedTab !== tabId) {
+      setDragOverTab(tabId)
+    }
+  }
+
+  const handleDragLeave = () => {
+    setDragOverTab(null)
+  }
+
+  const handleDrop = (e: React.DragEvent, targetTabId: string) => {
+    e.preventDefault()
+    if (!draggedTab || draggedTab === targetTabId) {
+      setDraggedTab(null)
+      setDragOverTab(null)
+      return
+    }
+
+    setTabs(prev => {
+      const newTabs = [...prev]
+      const draggedIndex = newTabs.findIndex(t => t.id === draggedTab)
+      const targetIndex = newTabs.findIndex(t => t.id === targetTabId)
+      const [removed] = newTabs.splice(draggedIndex, 1)
+      newTabs.splice(targetIndex, 0, removed)
+      return newTabs
+    })
+
+    setDraggedTab(null)
+    setDragOverTab(null)
+  }
+
+  const handleDragEnd = () => {
+    setDraggedTab(null)
+    setDragOverTab(null)
+  }
+
   if (!token || loading) {
     return (
       <div className="flex h-screen items-center justify-center">
-        <div className="text-gray-400">Loading...</div>
+        <div className="text-[var(--theme-fg-muted)]">Loading...</div>
       </div>
     )
   }
@@ -249,24 +339,36 @@ export default function Terminal() {
       </div>
 
       {/* Header with tabs */}
-      <div className="flex items-center border-b border-gray-700 bg-gray-900">
+      <div className="flex items-center bg-[var(--theme-bg-secondary)]">
         {/* Tabs */}
-        <div className="flex flex-1 items-center overflow-x-auto">
+        <div className="flex flex-1 items-center gap-1 overflow-x-auto px-2 pt-2">
           {tabs.map(tab => (
             <div
               key={tab.id}
-              className={`group flex items-center justify-between gap-2 border-r border-gray-700 px-4 py-2 cursor-pointer transition-all ${
+              draggable={editingTab !== tab.id}
+              onDragStart={(e) => handleDragStart(e, tab.id)}
+              onDragOver={(e) => handleDragOver(e, tab.id)}
+              onDragLeave={handleDragLeave}
+              onDrop={(e) => handleDrop(e, tab.id)}
+              onDragEnd={handleDragEnd}
+              className={`group flex items-center gap-2 rounded-t-lg px-4 py-2 cursor-pointer transition-all ${
                 activeTab === tab.id
-                  ? 'bg-gray-800 text-white'
-                  : 'text-gray-400 hover:bg-gray-800/50 hover:text-white'
+                  ? 'bg-[var(--theme-bg)] text-[var(--theme-fg)]'
+                  : 'text-[var(--theme-fg-muted)] hover:bg-[var(--theme-bg)]/50 hover:text-[var(--theme-fg)]'
+              } ${
+                draggedTab === tab.id ? 'opacity-50' : ''
+              } ${
+                dragOverTab === tab.id ? 'ring-2 ring-blue-500 ring-inset' : ''
               }`}
               style={{
-                minWidth: tabs.length <= 3 ? `${Math.floor(200 / tabs.length)}px` : '80px',
-                maxWidth: tabs.length <= 3 ? '200px' : '150px',
-                flex: tabs.length <= 5 ? '1' : '0 0 auto',
+                minWidth: '100px',
+                maxWidth: '180px',
               }}
               onClick={() => setActiveTab(tab.id)}
             >
+              <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" />
+              </svg>
               {editingTab === tab.id ? (
                 <input
                   type="text"
@@ -274,13 +376,13 @@ export default function Terminal() {
                   onChange={(e) => setEditName(e.target.value)}
                   onBlur={finishRename}
                   onKeyDown={handleRenameKeyDown}
-                  className="w-24 bg-gray-700 px-1 text-sm text-white outline-none"
+                  className="w-full min-w-0 flex-1 bg-transparent px-1 text-sm text-[var(--theme-fg)] outline-none"
                   autoFocus
                   onClick={(e) => e.stopPropagation()}
                 />
               ) : (
                 <span
-                  className="text-sm"
+                  className="flex-1 truncate text-sm"
                   onDoubleClick={(e) => {
                     e.stopPropagation()
                     startRename(tab)
@@ -294,34 +396,45 @@ export default function Terminal() {
                   e.stopPropagation()
                   closeTab(tab.id)
                 }}
-                className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-white"
+                className="flex-shrink-0 rounded p-0.5 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[var(--theme-bg-tertiary)] text-[var(--theme-fg-muted)] hover:text-[var(--theme-fg)]"
               >
-                x
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
               </button>
             </div>
           ))}
           <button
             onClick={() => createNewTab()}
-            className="px-3 py-2 text-gray-400 hover:bg-gray-800/50 hover:text-white"
+            className="flex-shrink-0 rounded-lg p-2 text-[var(--theme-fg-muted)] transition hover:bg-[var(--theme-bg)]/50 hover:text-[var(--theme-fg)]"
             title="New tab"
           >
-            +
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
           </button>
         </div>
 
         {/* Actions */}
-        <div className="flex gap-2 px-4">
+        <div className="flex items-center gap-1 px-2 pt-2">
           <button
             onClick={() => navigate('/settings')}
-            className="rounded px-3 py-1 text-sm text-gray-400 transition hover:bg-gray-800 hover:text-white"
+            className="rounded-lg p-2 text-[var(--theme-fg-muted)] transition hover:bg-[var(--theme-bg)]/50 hover:text-[var(--theme-fg)]"
+            title="Settings"
           >
-            Settings
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+            </svg>
           </button>
           <button
             onClick={handleLogout}
-            className="rounded px-3 py-1 text-sm text-gray-400 transition hover:bg-gray-800 hover:text-white"
+            className="rounded-lg p-2 text-[var(--theme-fg-muted)] transition hover:bg-[var(--theme-bg)]/50 hover:text-[var(--theme-fg)]"
+            title="Logout"
           >
-            Logout
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9" />
+            </svg>
           </button>
         </div>
       </div>
@@ -330,7 +443,7 @@ export default function Terminal() {
       <div className="flex-1 overflow-hidden p-2">
         {showCreatePrompt ? (
           <div className="flex h-full items-center justify-center">
-            <div className="w-full max-w-md rounded-lg border border-gray-700 bg-gray-800 p-6">
+            <div className="w-full max-w-md rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-secondary)] p-6">
               <h2 className="mb-4 text-lg font-semibold">Create New Session</h2>
               <input
                 type="text"
@@ -338,7 +451,7 @@ export default function Terminal() {
                 onChange={(e) => setNewSessionName(e.target.value)}
                 onKeyDown={handleCreateKeyDown}
                 placeholder="Session name (optional)"
-                className="mb-4 w-full rounded bg-gray-700 px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-blue-500"
+                className="mb-4 w-full rounded bg-[var(--theme-bg-tertiary)] px-3 py-2 text-[var(--theme-fg)] placeholder-[var(--theme-fg-muted)] outline-none focus:ring-2 focus:ring-blue-500"
                 autoFocus
               />
               <button
@@ -358,6 +471,9 @@ export default function Terminal() {
               <TerminalTab
                 token={token}
                 sessionId={tab.id}
+                theme={theme}
+                fontFamily={fontFamily}
+                fontSize={fontSize}
                 onError={handleError}
                 onExit={handleExit(tab.id)}
                 onFileComplete={handleFileComplete}

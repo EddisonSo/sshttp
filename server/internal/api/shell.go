@@ -88,8 +88,8 @@ func sendFileAck(conn *websocket.Conn, status byte, message string) error {
 
 func (s *Server) newUpgrader() websocket.Upgrader {
 	return websocket.Upgrader{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
+		ReadBufferSize:  32 * 1024,
+		WriteBufferSize: 32 * 1024,
 		CheckOrigin: func(r *http.Request) bool {
 			origin := r.Header.Get("Origin")
 			if origin == "" {

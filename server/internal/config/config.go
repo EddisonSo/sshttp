@@ -1,12 +1,14 @@
 package config
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"log"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 func getDefaultDataDir() string {
@@ -31,37 +33,124 @@ type Config struct {
 	RPOrigins     []string
 
 	// JWT
-	JWTSecret        string
-	TokenExpiryMins  int
+	JWTSecret       string
+	TokenExpiryMins int
 
 	// Session
 	SessionIdleTimeoutMins int
 }
 
 func Load() *Config {
-	dataDir := getEnv("SSHTTP_DATA_DIR", getDefaultDataDir())
+	dataDir := getDefaultDataDir()
+
+	// Ensure data directory exists
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		log.Fatalf("failed to create data directory: %v", err)
+	}
+
+	configPath := filepath.Join(dataDir, "config")
+	cfg := loadOrCreateConfig(configPath, dataDir)
+
+	return cfg
+}
+
+func loadOrCreateConfig(configPath, dataDir string) *Config {
+	// Default values
+	defaults := map[string]string{
+		"addr":                      ":4422",
+		"static_dir":                "",
+		"tls_cert":                  filepath.Join(dataDir, "cert.pem"),
+		"tls_key":                   filepath.Join(dataDir, "key.pem"),
+		"rp_display_name":           "sshttp",
+		"rp_id":                     "localhost",
+		"rp_origin":                 "https://localhost:4422",
+		"token_expiry_mins":         "15",
+		"session_idle_timeout_mins": "30",
+	}
+
+	values := make(map[string]string)
+	for k, v := range defaults {
+		values[k] = v
+	}
+
+	// Try to load existing config
+	if data, err := os.ReadFile(configPath); err == nil {
+		parseConfig(string(data), values)
+	} else if os.IsNotExist(err) {
+		// Create default config file
+		createDefaultConfig(configPath, defaults)
+		log.Printf("Created default config at %s - please edit and restart", configPath)
+	} else {
+		log.Printf("Warning: could not read config file: %v", err)
+	}
 
 	return &Config{
-		Addr:                   getEnv("SSHTTP_ADDR", ":4422"),
+		Addr:                   values["addr"],
 		DataDir:                dataDir,
-		StaticDir:              getEnv("SSHTTP_STATIC_DIR", ""), // Empty = use embedded
-		TLSCert:                getEnv("SSHTTP_TLS_CERT", filepath.Join(dataDir, "cert.pem")),
-		TLSKey:                 getEnv("SSHTTP_TLS_KEY", filepath.Join(dataDir, "key.pem")),
-		RPDisplayName:          getEnv("SSHTTP_RP_DISPLAY_NAME", "sshttp"),
-		RPID:                   getEnv("SSHTTP_RP_ID", "ssh.eddisonso.com"),
-		RPOrigins:              []string{getEnv("SSHTTP_RP_ORIGIN", "https://ssh.eddisonso.com:4422")},
-		JWTSecret:              getOrCreateSecret(dataDir, "SSHTTP_JWT_SECRET"),
-		TokenExpiryMins:        getEnvInt("SSHTTP_TOKEN_EXPIRY_MINS", 15),
-		SessionIdleTimeoutMins: getEnvInt("SSHTTP_SESSION_IDLE_TIMEOUT_MINS", 30),
+		StaticDir:              values["static_dir"],
+		TLSCert:                values["tls_cert"],
+		TLSKey:                 values["tls_key"],
+		RPDisplayName:          values["rp_display_name"],
+		RPID:                   values["rp_id"],
+		RPOrigins:              []string{values["rp_origin"]},
+		JWTSecret:              getOrCreateSecret(dataDir),
+		TokenExpiryMins:        parseInt(values["token_expiry_mins"], 15),
+		SessionIdleTimeoutMins: parseInt(values["session_idle_timeout_mins"], 30),
 	}
 }
 
-// getOrCreateSecret returns env var if set, otherwise loads/creates a persistent secret
-func getOrCreateSecret(dataDir, envKey string) string {
-	if val := os.Getenv(envKey); val != "" {
-		return val
+func parseConfig(content string, values map[string]string) {
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Parse key = value
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		values[key] = value
 	}
+}
 
+func createDefaultConfig(configPath string, defaults map[string]string) {
+	content := `# sshttp configuration
+# Edit this file to customize your server settings
+
+# Server listen address (host:port)
+addr = :4422
+
+# Path to static frontend files (empty = use embedded)
+static_dir =
+
+# TLS certificate and key paths
+tls_cert = ` + defaults["tls_cert"] + `
+tls_key = ` + defaults["tls_key"] + `
+
+# WebAuthn Relying Party settings
+# IMPORTANT: Change these to match your domain
+rp_display_name = sshttp
+rp_id = localhost
+rp_origin = https://localhost:4422
+
+# JWT token expiry time in minutes
+token_expiry_mins = 15
+
+# Shell session idle timeout in minutes
+session_idle_timeout_mins = 30
+`
+
+	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+		log.Printf("Warning: could not create config file: %v", err)
+	}
+}
+
+func getOrCreateSecret(dataDir string) string {
 	secretFile := filepath.Join(dataDir, ".jwt_secret")
 
 	// Try to read existing secret
@@ -76,29 +165,17 @@ func getOrCreateSecret(dataDir, envKey string) string {
 	}
 	secretHex := hex.EncodeToString(secret)
 
-	// Ensure data dir exists
-	os.MkdirAll(dataDir, 0700)
-
 	// Save secret with restrictive permissions
 	if err := os.WriteFile(secretFile, []byte(secretHex), 0600); err != nil {
-		log.Printf("warning: could not persist JWT secret: %v", err)
+		log.Printf("Warning: could not persist JWT secret: %v", err)
 	}
 
 	return secretHex
 }
 
-func getEnv(key, defaultVal string) string {
-	if val := os.Getenv(key); val != "" {
-		return val
-	}
-	return defaultVal
-}
-
-func getEnvInt(key string, defaultVal int) int {
-	if val := os.Getenv(key); val != "" {
-		if i, err := strconv.Atoi(val); err == nil {
-			return i
-		}
+func parseInt(s string, defaultVal int) int {
+	if i, err := strconv.Atoi(s); err == nil {
+		return i
 	}
 	return defaultVal
 }

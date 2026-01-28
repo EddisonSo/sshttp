@@ -95,7 +95,7 @@ export default function Register() {
       <div className="flex min-h-screen items-center justify-center">
         <div className="w-full max-w-md p-8 text-center">
           <h1 className="mb-4 text-2xl font-bold text-red-400">Invalid Registration Link</h1>
-          <p className="text-gray-400">Please use a valid registration link.</p>
+          <p className="text-[var(--theme-fg-muted)]">Please use a valid registration link.</p>
         </div>
       </div>
     )
@@ -109,11 +109,11 @@ export default function Register() {
         </h1>
 
         {username && (
-          <p className="mb-8 text-center text-lg text-gray-400">{username}</p>
+          <p className="mb-8 text-center text-lg text-[var(--theme-fg-muted)]">{username}</p>
         )}
 
         {status === 'loading' && (
-          <div className="text-center text-gray-400">Loading...</div>
+          <div className="text-center text-[var(--theme-fg-muted)]">Loading...</div>
         )}
 
         {status === 'success' ? (
@@ -121,7 +121,7 @@ export default function Register() {
             <p className="text-green-400">
               {isNewUser ? 'Registration successful!' : 'Passkey added successfully!'}
             </p>
-            <p className="mt-2 text-sm text-gray-400">Redirecting to login...</p>
+            <p className="mt-2 text-sm text-[var(--theme-fg-muted)]">Redirecting to login...</p>
           </div>
         ) : status === 'ready' || status === 'registering' || status === 'error' ? (
           <div className="space-y-6">
@@ -137,7 +137,7 @@ export default function Register() {
               {status === 'registering' ? 'Waiting for authenticator...' : 'Add Passkey'}
             </button>
 
-            <p className="text-center text-sm text-gray-500">
+            <p className="text-center text-sm text-[var(--theme-fg-muted)]">
               You will be prompted to create a passkey using your device's authentication.
             </p>
           </div>
