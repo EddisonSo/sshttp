@@ -48,6 +48,13 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
   const [isDragging, setIsDragging] = useState(false)
   const dragCounterRef = useRef(0)
 
+  // Handle touch to focus terminal (mobile keyboard support)
+  const handleTouchStart = useCallback(() => {
+    if (terminalRef.current) {
+      terminalRef.current.focus()
+    }
+  }, [])
+
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
@@ -113,6 +120,8 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
       fontSize: fontSize,
       fontWeight: '400',
       fontWeightBold: '700',
+      allowProposedApi: true,
+      scrollOnUserInput: true,
       theme: theme ? {
         background: theme.background,
         foreground: theme.foreground,
@@ -355,10 +364,12 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
+      onTouchStart={handleTouchStart}
+      onClick={handleTouchStart}
     >
       <div
         ref={containerRef}
-        className="h-full w-full"
+        className="h-full w-full touch-manipulation"
         style={{ backgroundColor: theme?.background || '#1a1a2e' }}
       />
       {isDragging && (
