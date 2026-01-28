@@ -10,6 +10,7 @@ interface UseTerminalOptions {
   onFileProgress?: (bytesUploaded: number, totalBytes: number) => void
   onFileComplete?: (filename: string) => void
   onFileError?: (error: string) => void
+  onSessionsChange?: () => void
 }
 
 interface FileUploadState {
@@ -19,12 +20,15 @@ interface FileUploadState {
   totalBytes: number
 }
 
-export function useTerminal({ token, sessionId, onExit, onError, onFileProgress, onFileComplete, onFileError }: UseTerminalOptions) {
+export function useTerminal({ token, sessionId, onExit, onError, onFileProgress, onFileComplete, onFileError, onSessionsChange }: UseTerminalOptions) {
   const termRef = useRef<XTermHandle>(null)
   const connRef = useRef<ShellConnection | null>(null)
+  const pendingDataRef = useRef<string[]>([]) // Buffer data until terminal is ready
   const [connected, setConnected] = useState(false)
   const [exitCode, setExitCode] = useState<number | null>(null)
   const [fileUpload, setFileUpload] = useState<FileUploadState | null>(null)
+  const [isWriter, setIsWriter] = useState(true) // Assume writer until told otherwise
+  const [clientCount, setClientCount] = useState(1)
 
   // Store callbacks in refs to avoid reconnection on callback changes
   const onExitRef = useRef(onExit)
@@ -32,11 +36,13 @@ export function useTerminal({ token, sessionId, onExit, onError, onFileProgress,
   const onFileProgressRef = useRef(onFileProgress)
   const onFileCompleteRef = useRef(onFileComplete)
   const onFileErrorRef = useRef(onFileError)
+  const onSessionsChangeRef = useRef(onSessionsChange)
   onExitRef.current = onExit
   onErrorRef.current = onError
   onFileProgressRef.current = onFileProgress
   onFileCompleteRef.current = onFileComplete
   onFileErrorRef.current = onFileError
+  onSessionsChangeRef.current = onSessionsChange
 
   // Connect to shell
   useEffect(() => {
@@ -44,7 +50,22 @@ export function useTerminal({ token, sessionId, onExit, onError, onFileProgress,
 
     const conn = connectShell(token, {
       onData: (data) => {
-        termRef.current?.write(data)
+        console.log('[useTerminal] onData:', data.length, 'bytes, termRef ready:', !!termRef.current, 'pending:', pendingDataRef.current.length)
+        if (termRef.current) {
+          // Flush any pending data first
+          if (pendingDataRef.current.length > 0) {
+            console.log('[useTerminal] Flushing', pendingDataRef.current.length, 'pending chunks')
+            for (const pending of pendingDataRef.current) {
+              termRef.current.write(pending)
+            }
+            pendingDataRef.current = []
+          }
+          termRef.current.write(data)
+        } else {
+          // Buffer data until terminal is ready
+          console.log('[useTerminal] Buffering data, terminal not ready')
+          pendingDataRef.current.push(data)
+        }
       },
       onExit: (code) => {
         setExitCode(code)
@@ -60,11 +81,42 @@ export function useTerminal({ token, sessionId, onExit, onError, onFileProgress,
       },
       onOpen: () => {
         // Send initial size immediately on connection
-        const size = termRef.current?.fit()
-        if (size) {
-          conn.resize(size.cols, size.rows)
+        // Retry a few times in case terminal isn't ready yet
+        const sendSize = (retries = 5) => {
+          const size = termRef.current?.fit()
+          if (size && size.cols > 0 && size.rows > 0) {
+            conn.resize(size.cols, size.rows)
+            termRef.current?.focus()
+            // Flush any data that arrived before terminal was ready
+            if (pendingDataRef.current.length > 0) {
+              for (const pending of pendingDataRef.current) {
+                termRef.current?.write(pending)
+              }
+              pendingDataRef.current = []
+            }
+          } else if (retries > 0) {
+            setTimeout(() => sendSize(retries - 1), 100)
+          } else {
+            // Fallback to default size
+            conn.resize(80, 24)
+          }
         }
-        termRef.current?.focus()
+        sendSize()
+      },
+      onWriteStateChange: (writer) => {
+        setIsWriter(writer)
+      },
+      onSessionsChange: () => {
+        onSessionsChangeRef.current?.()
+      },
+      onResizeNotify: (cols, rows) => {
+        // Server is telling us the terminal size changed (tmux-style min dimensions)
+        // Resize our xterm to match so display is correct
+        console.log('[useTerminal] onResizeNotify:', cols, 'x', rows, 'termRef ready:', !!termRef.current)
+        termRef.current?.resize(cols, rows)
+      },
+      onClientCount: (count) => {
+        setClientCount(count)
       },
     }, sessionId)
 
@@ -74,6 +126,7 @@ export function useTerminal({ token, sessionId, onExit, onError, onFileProgress,
     return () => {
       conn.close()
       connRef.current = null
+      pendingDataRef.current = []
     }
   }, [token, sessionId])
 
@@ -156,6 +209,8 @@ export function useTerminal({ token, sessionId, onExit, onError, onFileProgress,
     connected,
     exitCode,
     fileUpload,
+    isWriter,
+    clientCount,
     handleData,
     handleResize,
     handleFileDrop,

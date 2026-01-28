@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/eddison/sshttp/server/internal/auth"
@@ -15,7 +16,14 @@ import (
 	"github.com/eddison/sshttp/server/internal/pty"
 	"github.com/eddison/sshttp/server/internal/store"
 	"github.com/go-chi/chi/v5"
+	"github.com/gorilla/websocket"
 )
+
+// UserConn represents a WebSocket connection for a user
+type UserConn struct {
+	Conn    *websocket.Conn
+	WriteMu *sync.Mutex
+}
 
 type Server struct {
 	cfg            *config.Config
@@ -26,6 +34,10 @@ type Server struct {
 	mds            *mds.Client
 	rateLimiter    *middleware.RateLimiter
 	embeddedFS     fs.FS
+
+	// Track WebSocket connections per user for notifications
+	userConns   map[string]map[string]*UserConn // userID -> clientID -> conn
+	userConnsMu sync.RWMutex
 }
 
 func NewServer(cfg *config.Config, s store.Store, wa *auth.WebAuthnHandler, tm *auth.TokenManager, sm *pty.SessionManager, mdsClient *mds.Client) *Server {
@@ -37,6 +49,56 @@ func NewServer(cfg *config.Config, s store.Store, wa *auth.WebAuthnHandler, tm *
 		sessionManager: sm,
 		mds:            mdsClient,
 		rateLimiter:    middleware.NewRateLimiter(10, time.Minute),
+		userConns:      make(map[string]map[string]*UserConn),
+	}
+}
+
+// AddUserConn registers a WebSocket connection for a user
+func (s *Server) AddUserConn(userID, clientID string, conn *websocket.Conn, writeMu *sync.Mutex) {
+	s.userConnsMu.Lock()
+	defer s.userConnsMu.Unlock()
+
+	if s.userConns[userID] == nil {
+		s.userConns[userID] = make(map[string]*UserConn)
+	}
+	s.userConns[userID][clientID] = &UserConn{Conn: conn, WriteMu: writeMu}
+}
+
+// RemoveUserConn unregisters a WebSocket connection for a user
+func (s *Server) RemoveUserConn(userID, clientID string) {
+	s.userConnsMu.Lock()
+	defer s.userConnsMu.Unlock()
+
+	if conns, ok := s.userConns[userID]; ok {
+		delete(conns, clientID)
+		if len(conns) == 0 {
+			delete(s.userConns, userID)
+		}
+	}
+}
+
+// NotifySessionsChanged sends a notification to all of a user's connections
+func (s *Server) NotifySessionsChanged(userID string) {
+	s.userConnsMu.RLock()
+	conns := s.userConns[userID]
+	if conns == nil {
+		s.userConnsMu.RUnlock()
+		return
+	}
+	// Copy to avoid holding lock during writes
+	connList := make([]*UserConn, 0, len(conns))
+	for _, uc := range conns {
+		connList = append(connList, uc)
+	}
+	s.userConnsMu.RUnlock()
+
+	// Send notification to all connections
+	frame := []byte{0x21} // FrameSessionsChange
+	for _, uc := range connList {
+		uc.WriteMu.Lock()
+		uc.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		uc.Conn.WriteMessage(websocket.BinaryMessage, frame)
+		uc.WriteMu.Unlock()
 	}
 }
 

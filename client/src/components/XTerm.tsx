@@ -10,6 +10,8 @@ export interface XTermHandle {
   write: (data: string) => void
   fit: () => { cols: number; rows: number }
   focus: () => void
+  refresh: () => void
+  resize: (cols: number, rows: number) => void
 }
 
 interface XTermProps {
@@ -26,17 +28,18 @@ const DEFAULT_FONT_FAMILY = 'monospace'
 
 // Filter out terminal response sequences that get echoed back from the PTY
 // Preserves OSC52 (clipboard) sequences which are needed for copy/paste
-function filterTerminalResponses(data: string): string {
-  return data
-    .replace(/\x1b\[\?[\d;]*c/g, '')              // DA1 (device attributes)
-    .replace(/\x1b\[>[\d;]*c/g, '')               // DA2 (secondary device attributes)
-    .replace(/\x1b\[\d+;\d+R/g, '')               // CPR (cursor position report)
-    .replace(/\x1b\[\?[\d;]+\$y/g, '')            // DECRPM (mode report)
-    .replace(/\x1b\[[IO]/g, '')                   // Focus in/out reports
-    .replace(/\x1bP[^\x1b]*\x1b\\/g, '')          // DCS (device control string)
-    .replace(/\x1b\](?!52;)[^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC except OSC52 (clipboard)
-    .replace(/\x1b\[[\d;]*_/g, '')                // APC-like sequences
-}
+// Currently disabled for debugging
+// function filterTerminalResponses(data: string): string {
+//   return data
+//     .replace(/\x1b\[\?[\d;]*c/g, '')              // DA1 (device attributes)
+//     .replace(/\x1b\[>[\d;]*c/g, '')               // DA2 (secondary device attributes)
+//     .replace(/\x1b\[\d+;\d+R/g, '')               // CPR (cursor position report)
+//     .replace(/\x1b\[\?[\d;]+\$y/g, '')            // DECRPM (mode report)
+//     .replace(/\x1b\[[IO]/g, '')                   // Focus in/out reports
+//     .replace(/\x1bP[^\x1b]*\x1b\\/g, '')          // DCS (device control string)
+//     .replace(/\x1b\](?!52;)[^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC except OSC52 (clipboard)
+//     .replace(/\x1b\[[\d;]*_/g, '')                // APC-like sequences
+// }
 
 const DEFAULT_FONT_SIZE = 14
 
@@ -93,11 +96,36 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
     terminalRef.current?.focus()
   }, [onFileDrop])
 
+  // Force browser repaint using multiple techniques
+  const forceRepaint = useCallback(() => {
+    if (containerRef.current) {
+      // Technique 1: Toggle transform
+      containerRef.current.style.transform = 'translateZ(0)'
+
+      // Technique 2: Force layout recalculation
+      void containerRef.current.offsetHeight
+
+      // Technique 3: Toggle opacity slightly
+      containerRef.current.style.opacity = '0.99'
+
+      requestAnimationFrame(() => {
+        if (containerRef.current) {
+          containerRef.current.style.transform = ''
+          containerRef.current.style.opacity = '1'
+        }
+      })
+    }
+  }, [])
+
   useImperativeHandle(ref, () => ({
     write: (data: string) => {
-      const filtered = filterTerminalResponses(data)
-      if (filtered) {
-        terminalRef.current?.write(filtered)
+      console.log('[XTerm] write:', data?.length, 'bytes, terminal ready:', !!terminalRef.current)
+      if (data && terminalRef.current) {
+        terminalRef.current.write(data, () => {
+          // Force refresh after write completes
+          terminalRef.current?.refresh(0, terminalRef.current.rows - 1)
+          forceRepaint()
+        })
       }
     },
     fit: () => {
@@ -108,6 +136,23 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
     },
     focus: () => {
       terminalRef.current?.focus()
+    },
+    refresh: () => {
+      if (terminalRef.current) {
+        // Force full terminal refresh
+        terminalRef.current.refresh(0, terminalRef.current.rows - 1)
+        // Also force browser repaint
+        forceRepaint()
+      }
+    },
+    resize: (cols: number, rows: number) => {
+      console.log('[XTerm] resize to:', cols, 'x', rows, 'terminal ready:', !!terminalRef.current)
+      if (terminalRef.current) {
+        terminalRef.current.resize(cols, rows)
+        // Force refresh after resize
+        terminalRef.current.refresh(0, terminalRef.current.rows - 1)
+        forceRepaint()
+      }
     },
   }))
 
@@ -180,39 +225,17 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
 
     window.addEventListener('resize', handleResize)
 
-    // Wait for the specific font to be loaded before initializing WebGL and fitting
-    // This ensures proper character width measurement - WebGL addon caches font metrics on init
+    // Wait for the specific font to be loaded before initializing WebGL addon and fitting
+    // This ensures proper character width measurement
     const initialFontFamily = fontFamily || DEFAULT_FONT_FAMILY
     const primaryFont = initialFontFamily.split(',')[0].trim().replace(/^["']|["']$/g, '')
 
     const initializeWithFont = () => {
       if (!terminalRef.current) return
 
-      // Load WebGL addon AFTER font is ready - it caches glyph textures on init
-      try {
-        const webglAddon = new WebglAddon()
-        terminal.loadAddon(webglAddon)
-        webglAddonRef.current = webglAddon
-
-        // Clear texture atlas after delays to fix any glyphs
-        // that were cached before the font was fully applied
-        // Multiple clears catch glyphs rendered at different times
-        const clearAtlas = () => {
-          if (webglAddonRef.current) {
-            try {
-              webglAddonRef.current.clearTextureAtlas()
-            } catch {
-              // Ignore if not supported
-            }
-          }
-        }
-        setTimeout(clearAtlas, 50)
-        setTimeout(clearAtlas, 200)
-        setTimeout(clearAtlas, 500)
-      } catch {
-        // WebGL not available, fallback to canvas renderer
-        webglAddonRef.current = null
-      }
+      // Skip WebGL addon - it has rendering bugs where content doesn't paint
+      // The built-in DOM renderer is more reliable
+      webglAddonRef.current = null
 
       requestAnimationFrame(() => {
         fitAddon.fit()
@@ -275,26 +298,6 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
       // Set the new font family
       terminalRef.current.options.fontFamily = newFontFamily
 
-      // Dispose and recreate WebGL addon to ensure proper font metrics
-      // The WebGL renderer caches font measurements that don't update on font change
-      if (webglAddonRef.current) {
-        try {
-          webglAddonRef.current.dispose()
-        } catch {
-          // Ignore disposal errors
-        }
-        webglAddonRef.current = null
-      }
-
-      // Recreate WebGL addon with new font
-      try {
-        const webglAddon = new WebglAddon()
-        terminalRef.current.loadAddon(webglAddon)
-        webglAddonRef.current = webglAddon
-      } catch {
-        // WebGL not available
-      }
-
       // Force terminal to recalculate character dimensions
       requestAnimationFrame(() => {
         if (!terminalRef.current || !fitAddonRef.current) return
@@ -314,24 +317,6 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
   useEffect(() => {
     if (!terminalRef.current) return
     terminalRef.current.options.fontSize = fontSize
-
-    // Recreate WebGL addon to handle new font size measurements
-    if (webglAddonRef.current) {
-      try {
-        webglAddonRef.current.dispose()
-      } catch {
-        // Ignore disposal errors
-      }
-      webglAddonRef.current = null
-    }
-
-    try {
-      const webglAddon = new WebglAddon()
-      terminalRef.current.loadAddon(webglAddon)
-      webglAddonRef.current = webglAddon
-    } catch {
-      // WebGL not available
-    }
 
     requestAnimationFrame(() => {
       if (!terminalRef.current || !fitAddonRef.current) return

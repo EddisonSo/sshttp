@@ -29,6 +29,7 @@ function TerminalTab({
   onExit,
   onFileComplete,
   onFileError,
+  onSessionsChange,
 }: {
   token: string
   sessionId?: string
@@ -40,19 +41,46 @@ function TerminalTab({
   onExit: (code: number) => void
   onFileComplete?: (filename: string) => void
   onFileError?: (error: string) => void
+  onSessionsChange?: () => void
 }) {
-  const { termRef, handleData, handleResize, handleFileDrop, fileUpload } = useTerminal({
+  const { termRef, handleData, handleResize, handleFileDrop, fileUpload, isWriter, clientCount } = useTerminal({
     token,
     sessionId,
     onExit,
     onError,
     onFileComplete,
     onFileError,
+    onSessionsChange,
   })
+
+  const viewerCount = clientCount - 1 // Exclude the writer
 
   return (
     <div className="relative h-full w-full">
       <XTerm ref={termRef} onData={handleData} onResize={handleResize} onFileDrop={handleFileDrop} theme={theme} fontFamily={fontFamily} fontSize={fontSize} isActive={isActive} />
+      {/* Viewer mode indicator */}
+      {!isWriter && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 rounded-full bg-amber-600/90 px-4 py-1.5 text-sm font-medium text-white shadow-lg">
+          <span className="flex items-center gap-2">
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+            </svg>
+            Viewer Mode
+          </span>
+        </div>
+      )}
+      {/* Connected users indicator */}
+      {clientCount > 1 && (
+        <div className="absolute top-4 right-4 rounded-full bg-blue-600/90 px-3 py-1 text-sm font-medium text-white shadow-lg">
+          <span className="flex items-center gap-1.5">
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
+            </svg>
+            {viewerCount} {viewerCount === 1 ? 'viewer' : 'viewers'}
+          </span>
+        </div>
+      )}
       {fileUpload && (
         <div className="absolute bottom-4 right-4 rounded-lg bg-[var(--theme-bg-secondary)] px-4 py-3 shadow-lg">
           <div className="mb-1 text-sm text-[var(--theme-fg)]">
@@ -110,6 +138,51 @@ export default function Terminal() {
   const handleFileError = useCallback((error: string) => {
     addToast('error', `Upload failed: ${error}`)
   }, [addToast])
+
+  // Refresh sessions when notified by server (another client created/deleted/renamed a session)
+  const handleSessionsChange = useCallback(async () => {
+    if (!token) return
+    try {
+      const res = await api.listSessions(token)
+      const serverSessions = new Map(res.sessions.map(s => [s.id, s.name]))
+
+      setTabs(prev => {
+        // Keep existing tabs in their current order, update names if changed
+        const existingTabIds = new Set(prev.map(t => t.id))
+        const updatedTabs = prev
+          .filter(t => serverSessions.has(t.id)) // Remove deleted tabs
+          .map(t => ({ ...t, name: serverSessions.get(t.id) || t.name })) // Update names
+
+        // Add new tabs at the end
+        const newTabs = res.sessions
+          .filter(s => !existingTabIds.has(s.id))
+          .map(s => ({ id: s.id, name: s.name }))
+
+        const allTabs = [...updatedTabs, ...newTabs]
+
+        // Save the updated order
+        const order = allTabs.map(t => t.id)
+        localStorage.setItem('tab-order', JSON.stringify(order))
+
+        return allTabs
+      })
+
+      // If current active tab was deleted, switch to first tab
+      setActiveTab(prev => {
+        const stillExists = res.sessions.some(s => s.id === prev)
+        if (!stillExists && res.sessions.length > 0) {
+          return res.sessions[0].id
+        }
+        if (res.sessions.length === 0) {
+          setShowCreatePrompt(true)
+          return null
+        }
+        return prev
+      })
+    } catch (err) {
+      console.error('Failed to refresh sessions:', err)
+    }
+  }, [token])
 
   useEffect(() => {
     const storedToken = sessionStorage.getItem('accessToken')
@@ -181,6 +254,8 @@ export default function Terminal() {
           }
         }
         setTabs(existingTabs)
+        // Save the order to keep it up to date
+        saveTabOrder(existingTabs)
         setActiveTab(existingTabs[0].id)
         setShowCreatePrompt(false)
       } else {
@@ -196,6 +271,11 @@ export default function Terminal() {
     }
   }
 
+  const saveTabOrder = (newTabs: Tab[]) => {
+    const order = newTabs.map(t => t.id)
+    localStorage.setItem('tab-order', JSON.stringify(order))
+  }
+
   const createNewTab = async (t?: string, name?: string) => {
     const tokenToUse = t || token
     if (!tokenToUse) return
@@ -203,7 +283,12 @@ export default function Terminal() {
     try {
       const res = await api.createSession(tokenToUse, name || undefined)
       const newTab = { id: res.id, name: res.name }
-      setTabs(prev => [...prev, newTab])
+      setTabs(prev => {
+        const newTabs = [...prev, newTab]
+        // Save order so new tab stays at the end
+        saveTabOrder(newTabs)
+        return newTabs
+      })
       setActiveTab(res.id)
       setShowCreatePrompt(false)
       setNewSessionName('')
@@ -240,6 +325,8 @@ export default function Terminal() {
       if (filtered.length === 0) {
         setShowCreatePrompt(true)
       }
+      // Update saved order
+      saveTabOrder(filtered)
       return filtered
     })
   }
@@ -249,10 +336,10 @@ export default function Terminal() {
     navigate('/login')
   }
 
-  const handleError = () => {
-    sessionStorage.removeItem('accessToken')
-    navigate('/login')
-  }
+  const handleError = useCallback(() => {
+    addToast('error', 'Connection lost. Reconnecting...')
+    // Don't log out - WebSocket errors don't mean auth is invalid
+  }, [addToast])
 
   const handleExit = (tabId: string) => () => {
     // Remove the tab when shell exits
@@ -304,11 +391,6 @@ export default function Terminal() {
 
   const handleDragLeave = () => {
     setDragOverTab(null)
-  }
-
-  const saveTabOrder = (newTabs: Tab[]) => {
-    const order = newTabs.map(t => t.id)
-    localStorage.setItem('tab-order', JSON.stringify(order))
   }
 
   const handleDrop = (e: React.DragEvent, targetTabId: string) => {
@@ -584,6 +666,7 @@ export default function Terminal() {
                 onExit={handleExit(tab.id)}
                 onFileComplete={handleFileComplete}
                 onFileError={handleFileError}
+                onSessionsChange={handleSessionsChange}
               />
             </div>
           ))

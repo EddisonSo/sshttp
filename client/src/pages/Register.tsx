@@ -81,6 +81,8 @@ export default function Register() {
       } else if (err instanceof Error) {
         if (err.name === 'NotAllowedError') {
           setError('Registration was cancelled or timed out')
+        } else if (err.name === 'UnknownError' || err.message.includes('transient')) {
+          setError('Registration failed due to a temporary issue. Please try again.')
         } else {
           setError(err.message)
         }
