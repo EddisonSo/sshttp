@@ -21,6 +21,7 @@ import {
   getActiveFontName,
   getFontSize,
   setFontSize,
+  getFontFamily,
   loadFontsFromServer,
   uploadFontToServer,
   deleteFontFromServer,
@@ -583,26 +584,56 @@ export default function Settings() {
           <h2 className="mb-6 mt-12 text-2xl font-bold">Terminal Font</h2>
 
           {/* Font size control */}
-          <div className="mb-6 flex items-center gap-4 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-secondary)] p-4">
-            <span className="font-medium">Font Size</span>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => handleFontSizeChange(-1)}
-                disabled={currentFontSize <= MIN_FONT_SIZE}
-                className="rounded bg-[var(--theme-bg-tertiary)] px-3 py-1 text-lg font-bold transition hover:bg-[var(--theme-fg-muted)]/20 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                -
-              </button>
-              <span className="w-12 text-center text-lg font-mono">{currentFontSize}px</span>
-              <button
-                onClick={() => handleFontSizeChange(1)}
-                disabled={currentFontSize >= MAX_FONT_SIZE}
-                className="rounded bg-[var(--theme-bg-tertiary)] px-3 py-1 text-lg font-bold transition hover:bg-[var(--theme-fg-muted)]/20 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                +
-              </button>
-            </div>
-          </div>
+          {(() => {
+            const currentTheme = themes.find(t => t.name === activeTheme)
+            const previewBg = currentTheme?.background || '#1a1a2e'
+            const previewFg = currentTheme?.foreground || '#eaeaea'
+            const previewKeyword = currentTheme?.magenta || '#ff79c6'
+            const previewFunc = currentTheme?.green || '#50fa7b'
+            const previewParam = currentTheme?.cyan || '#8be9fd'
+            return (
+              <div className="mb-6 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-secondary)] p-4">
+                <div className="flex items-center gap-4">
+                  <span className="font-medium">Font Size</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleFontSizeChange(-1)}
+                      disabled={currentFontSize <= MIN_FONT_SIZE}
+                      className="rounded bg-[var(--theme-bg-tertiary)] px-3 py-1 text-lg font-bold transition hover:bg-[var(--theme-fg-muted)]/20 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      -
+                    </button>
+                    <span className="w-12 text-center text-lg font-mono">{currentFontSize}px</span>
+                    <button
+                      onClick={() => handleFontSizeChange(1)}
+                      disabled={currentFontSize >= MAX_FONT_SIZE}
+                      className="rounded bg-[var(--theme-bg-tertiary)] px-3 py-1 text-lg font-bold transition hover:bg-[var(--theme-fg-muted)]/20 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                <div
+                  className="mt-3 overflow-x-auto rounded px-3 py-2"
+                  style={{
+                    backgroundColor: previewBg,
+                    fontFamily: getFontFamily(activeFontName),
+                    fontSize: `${currentFontSize}px`,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  <span style={{ color: previewKeyword }}>def</span>
+                  <span style={{ color: previewFg }}> </span>
+                  <span style={{ color: previewFunc }}>login</span>
+                  <span style={{ color: previewFg }}>(</span>
+                  <span style={{ color: previewParam }}>username</span>
+                  <span style={{ color: previewFg }}>, </span>
+                  <span style={{ color: previewParam }}>password</span>
+                  <span style={{ color: previewFg }}>):</span>
+                </div>
+              </div>
+            )
+          })()}
 
           {/* Font list */}
           <div className="mb-6 space-y-2">
