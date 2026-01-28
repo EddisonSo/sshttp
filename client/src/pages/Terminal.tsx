@@ -24,6 +24,7 @@ function TerminalTab({
   theme,
   fontFamily,
   fontSize,
+  isActive,
   onError,
   onExit,
   onFileComplete,
@@ -34,6 +35,7 @@ function TerminalTab({
   theme?: TerminalTheme
   fontFamily?: string
   fontSize?: number
+  isActive?: boolean
   onError: () => void
   onExit: (code: number) => void
   onFileComplete?: (filename: string) => void
@@ -50,7 +52,7 @@ function TerminalTab({
 
   return (
     <div className="relative h-full w-full">
-      <XTerm ref={termRef} onData={handleData} onResize={handleResize} onFileDrop={handleFileDrop} theme={theme} fontFamily={fontFamily} fontSize={fontSize} />
+      <XTerm ref={termRef} onData={handleData} onResize={handleResize} onFileDrop={handleFileDrop} theme={theme} fontFamily={fontFamily} fontSize={fontSize} isActive={isActive} />
       {fileUpload && (
         <div className="absolute bottom-4 right-4 rounded-lg bg-[var(--theme-bg-secondary)] px-4 py-3 shadow-lg">
           <div className="mb-1 text-sm text-[var(--theme-fg)]">
@@ -160,6 +162,24 @@ export default function Terminal() {
           id: s.id,
           name: s.name,
         }))
+        // Restore saved tab order if available
+        const savedOrder = localStorage.getItem('tab-order')
+        if (savedOrder) {
+          try {
+            const order = JSON.parse(savedOrder) as string[]
+            existingTabs.sort((a, b) => {
+              const aIndex = order.indexOf(a.id)
+              const bIndex = order.indexOf(b.id)
+              // Tabs not in saved order go to the end
+              if (aIndex === -1 && bIndex === -1) return 0
+              if (aIndex === -1) return 1
+              if (bIndex === -1) return -1
+              return aIndex - bIndex
+            })
+          } catch {
+            // Invalid saved order, use default
+          }
+        }
         setTabs(existingTabs)
         setActiveTab(existingTabs[0].id)
         setShowCreatePrompt(false)
@@ -286,6 +306,11 @@ export default function Terminal() {
     setDragOverTab(null)
   }
 
+  const saveTabOrder = (newTabs: Tab[]) => {
+    const order = newTabs.map(t => t.id)
+    localStorage.setItem('tab-order', JSON.stringify(order))
+  }
+
   const handleDrop = (e: React.DragEvent, targetTabId: string) => {
     e.preventDefault()
     if (!draggedTab || draggedTab === targetTabId) {
@@ -300,6 +325,57 @@ export default function Terminal() {
       const targetIndex = newTabs.findIndex(t => t.id === targetTabId)
       const [removed] = newTabs.splice(draggedIndex, 1)
       newTabs.splice(targetIndex, 0, removed)
+      saveTabOrder(newTabs)
+      return newTabs
+    })
+
+    setDraggedTab(null)
+    setDragOverTab(null)
+  }
+
+  // Drop at start of tab bar (leftmost position)
+  const handleDropAtStart = (e: React.DragEvent) => {
+    e.preventDefault()
+    if (!draggedTab) {
+      setDragOverTab(null)
+      return
+    }
+
+    setTabs(prev => {
+      const newTabs = [...prev]
+      const draggedIndex = newTabs.findIndex(t => t.id === draggedTab)
+      if (draggedIndex === 0) {
+        // Already at start
+        return prev
+      }
+      const [removed] = newTabs.splice(draggedIndex, 1)
+      newTabs.unshift(removed)
+      saveTabOrder(newTabs)
+      return newTabs
+    })
+
+    setDraggedTab(null)
+    setDragOverTab(null)
+  }
+
+  // Drop at end of tab bar (rightmost position)
+  const handleDropAtEnd = (e: React.DragEvent) => {
+    e.preventDefault()
+    if (!draggedTab) {
+      setDragOverTab(null)
+      return
+    }
+
+    setTabs(prev => {
+      const newTabs = [...prev]
+      const draggedIndex = newTabs.findIndex(t => t.id === draggedTab)
+      if (draggedIndex === newTabs.length - 1) {
+        // Already at end
+        return prev
+      }
+      const [removed] = newTabs.splice(draggedIndex, 1)
+      newTabs.push(removed)
+      saveTabOrder(newTabs)
       return newTabs
     })
 
@@ -342,6 +418,20 @@ export default function Terminal() {
       <div className="flex items-center bg-[var(--theme-bg-secondary)]">
         {/* Tabs */}
         <div className="flex flex-1 items-center gap-1 overflow-x-auto px-2 pt-2">
+          {/* Drop zone for dragging to start */}
+          {draggedTab && (
+            <div
+              className={`flex-shrink-0 w-8 h-8 rounded transition-all ${
+                dragOverTab === 'start' ? 'bg-blue-500/30 ring-2 ring-blue-500' : ''
+              }`}
+              onDragOver={(e) => {
+                e.preventDefault()
+                setDragOverTab('start')
+              }}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDropAtStart}
+            />
+          )}
           {tabs.map(tab => (
             <div
               key={tab.id}
@@ -361,8 +451,9 @@ export default function Terminal() {
                 dragOverTab === tab.id ? 'ring-2 ring-blue-500 ring-inset' : ''
               }`}
               style={{
-                minWidth: '100px',
-                maxWidth: '180px',
+                minWidth: tabs.length <= 3 ? '150px' : '100px',
+                maxWidth: tabs.length <= 3 ? '250px' : '180px',
+                flex: tabs.length <= 5 ? '1 1 auto' : '0 0 auto',
               }}
               onClick={() => setActiveTab(tab.id)}
             >
@@ -404,6 +495,20 @@ export default function Terminal() {
               </button>
             </div>
           ))}
+          {/* Drop zone for dragging to end */}
+          {draggedTab && (
+            <div
+              className={`flex-shrink-0 w-8 h-8 rounded transition-all ${
+                dragOverTab === 'end' ? 'bg-blue-500/30 ring-2 ring-blue-500' : ''
+              }`}
+              onDragOver={(e) => {
+                e.preventDefault()
+                setDragOverTab('end')
+              }}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDropAtEnd}
+            />
+          )}
           <button
             onClick={() => createNewTab()}
             className="flex-shrink-0 rounded-lg p-2 text-[var(--theme-fg-muted)] transition hover:bg-[var(--theme-bg)]/50 hover:text-[var(--theme-fg)]"
@@ -474,6 +579,7 @@ export default function Terminal() {
                 theme={theme}
                 fontFamily={fontFamily}
                 fontSize={fontSize}
+                isActive={activeTab === tab.id}
                 onError={handleError}
                 onExit={handleExit(tab.id)}
                 onFileComplete={handleFileComplete}

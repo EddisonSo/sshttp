@@ -19,6 +19,7 @@ interface XTermProps {
   theme?: TerminalTheme
   fontFamily?: string
   fontSize?: number
+  isActive?: boolean
 }
 
 const DEFAULT_FONT_FAMILY = 'monospace'
@@ -39,7 +40,7 @@ function filterTerminalResponses(data: string): string {
 
 const DEFAULT_FONT_SIZE = 14
 
-const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDrop, theme, fontFamily, fontSize = DEFAULT_FONT_SIZE }, ref) => {
+const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDrop, theme, fontFamily, fontSize = DEFAULT_FONT_SIZE, isActive = true }, ref) => {
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -315,6 +316,21 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
       }
     })
   }, [fontSize, onResize])
+
+  // Re-fit terminal when tab becomes active (visible)
+  useEffect(() => {
+    if (!isActive || !terminalRef.current || !fitAddonRef.current) return
+
+    // Use requestAnimationFrame to ensure the container has correct dimensions
+    requestAnimationFrame(() => {
+      if (!terminalRef.current || !fitAddonRef.current) return
+      fitAddonRef.current.fit()
+      if (onResize) {
+        onResize(terminalRef.current.cols, terminalRef.current.rows)
+      }
+      terminalRef.current.focus()
+    })
+  }, [isActive, onResize])
 
   return (
     <div
