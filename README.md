@@ -25,6 +25,7 @@ sshttp makes shell access feel like modern login:
 - **Single Port**: HTTPS only (443)
 - **No Local Keys**: No SSH agent or key files required
 - **Security Hardened**: Rate limiting, CORS, CSP headers, JWT tokens, audit logging
+- **Customizable**: Import iTerm2 themes, upload custom fonts, adjustable font size
 
 ## Quick Start
 
@@ -55,6 +56,8 @@ cd server
 ./sshttpd
 ```
 
+On first run, a default config file is created at `~/.sshttp/config`. Edit it to match your domain settings.
+
 2. Create a registration link for a user:
 ```bash
 ./sshttpd --register <username>
@@ -82,23 +85,64 @@ npm run dev
 
 ## Configuration
 
-Environment variables:
+sshttp uses a config file located at `~/.sshttp/config`. On first run, a default config is created:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SSHTTP_ADDR` | `:4422` | Server listen address |
-| `SSHTTP_DATA_DIR` | `~/.sshttp` | Data directory (database, secrets) |
-| `SSHTTP_TLS_CERT` | `$DATA_DIR/cert.pem` | TLS certificate path |
-| `SSHTTP_TLS_KEY` | `$DATA_DIR/key.pem` | TLS private key path |
-| `SSHTTP_RP_ID` | `localhost` | WebAuthn Relying Party ID |
-| `SSHTTP_RP_ORIGIN` | `http://localhost:4422` | Allowed origin for WebAuthn |
-| `SSHTTP_JWT_SECRET` | (auto-generated) | JWT signing secret |
-| `SSHTTP_TOKEN_EXPIRY_MINS` | `15` | JWT token expiry in minutes |
-| `SSHTTP_SESSION_IDLE_TIMEOUT_MINS` | `30` | Shell session idle timeout |
+```ini
+# sshttp configuration
+# Edit this file to customize your server settings
+
+# Server listen address (host:port)
+addr = :4422
+
+# Path to static frontend files (empty = use embedded)
+static_dir =
+
+# TLS certificate and key paths
+tls_cert = ~/.sshttp/cert.pem
+tls_key = ~/.sshttp/key.pem
+
+# WebAuthn Relying Party settings
+# IMPORTANT: Change these to match your domain
+rp_display_name = sshttp
+rp_id = localhost
+rp_origin = https://localhost:4422
+
+# JWT token expiry time in minutes
+token_expiry_mins = 15
+
+# Shell session idle timeout in minutes
+session_idle_timeout_mins = 30
+```
+
+### Configuration Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `addr` | `:4422` | Server listen address |
+| `static_dir` | (empty) | Static files path (empty = use embedded) |
+| `tls_cert` | `~/.sshttp/cert.pem` | TLS certificate path |
+| `tls_key` | `~/.sshttp/key.pem` | TLS private key path |
+| `rp_display_name` | `sshttp` | WebAuthn display name |
+| `rp_id` | `localhost` | WebAuthn Relying Party ID (your domain) |
+| `rp_origin` | `https://localhost:4422` | Allowed origin for WebAuthn |
+| `token_expiry_mins` | `15` | JWT token expiry in minutes |
+| `session_idle_timeout_mins` | `30` | Shell session idle timeout |
+
+### Data Directory
+
+All data is stored in `~/.sshttp/`:
+
+| File | Description |
+|------|-------------|
+| `config` | Server configuration |
+| `sshttp.db` | SQLite database (users, credentials, sessions) |
+| `.jwt_secret` | Auto-generated JWT signing secret |
+| `cert.pem` | TLS certificate (you provide) |
+| `key.pem` | TLS private key (you provide) |
+| `themes/` | User-uploaded terminal themes |
+| `fonts/` | User-uploaded custom fonts |
 
 **TLS is required** for WebAuthn authentication to work. TLS is enabled automatically if both cert and key files exist at the configured paths.
-
-All secrets and data (database, JWT secret, certificates) are stored in `~/.sshttp` by default, outside the repository.
 
 ## Architecture
 
@@ -171,13 +215,13 @@ Binary frames with type prefix:
 
 | Type | Value | Direction | Payload |
 |------|-------|-----------|---------|
-| STDIN | `0x01` | Client → Server | Terminal input bytes |
-| STDOUT | `0x02` | Server → Client | Terminal output bytes |
-| RESIZE | `0x04` | Client → Server | cols:u16, rows:u16 (big endian) |
-| EXIT | `0x05` | Server → Client | exit_code:u32 (big endian) |
-| FILE_START | `0x10` | Client → Server | size:u32, name_len:u16, name:utf8 |
-| FILE_CHUNK | `0x11` | Client → Server | offset:u32, data:bytes |
-| FILE_ACK | `0x12` | Server → Client | status:u8, message?:utf8 |
+| STDIN | `0x01` | Client -> Server | Terminal input bytes |
+| STDOUT | `0x02` | Server -> Client | Terminal output bytes |
+| RESIZE | `0x04` | Client -> Server | cols:u16, rows:u16 (big endian) |
+| EXIT | `0x05` | Server -> Client | exit_code:u32 (big endian) |
+| FILE_START | `0x10` | Client -> Server | size:u32, name_len:u16, name:utf8 |
+| FILE_CHUNK | `0x11` | Client -> Server | offset:u32, data:bytes |
+| FILE_ACK | `0x12` | Server -> Client | status:u8, message?:utf8 |
 
 ### File Transfer
 
@@ -265,7 +309,7 @@ sudo cp sshttp.service /etc/systemd/system/
 sudo nano /etc/systemd/system/sshttp.service
 ```
 
-2. Update the service file with your settings:
+2. Example service file:
 
 ```ini
 [Unit]
@@ -276,21 +320,16 @@ After=network.target
 Type=simple
 User=youruser
 Group=youruser
-WorkingDirectory=/var/lib/sshttp
+WorkingDirectory=/home/youruser
 ExecStart=/usr/local/bin/sshttpd
 Restart=always
 RestartSec=5
 
-# Environment configuration
-Environment=SSHTTP_ADDR=:4422
-Environment=SSHTTP_DATA_DIR=/var/lib/sshttp
-Environment=SSHTTP_RP_ID=sshttp.example.com
-Environment=SSHTTP_RP_ORIGIN=https://sshttp.example.com
-Environment=SSHTTP_JWT_SECRET=your-secure-random-secret-here
-
 [Install]
 WantedBy=multi-user.target
 ```
+
+Note: Configuration is read from `~/.sshttp/config` (relative to the user running the service).
 
 3. Enable and start the service:
 
@@ -336,10 +375,35 @@ The server embeds the frontend static files directly, so no separate web server 
 make install
 ```
 
-2. Configure environment variables (in systemd service or shell):
-   - Set `SSHTTP_RP_ID` to your domain (e.g., `sshttp.example.com`)
-   - Set `SSHTTP_RP_ORIGIN` to your full origin (e.g., `https://sshttp.example.com`)
+2. Edit the config file at `~/.sshttp/config`:
+   - Set `rp_id` to your domain (e.g., `sshttp.example.com`)
+   - Set `rp_origin` to your full origin (e.g., `https://sshttp.example.com`)
 
 3. Configure TLS (required for WebAuthn):
-   - Set `SSHTTP_TLS_CERT` and `SSHTTP_TLS_KEY` to your certificate paths
+   - Place your certificate at the path specified in `tls_cert`
+   - Place your private key at the path specified in `tls_key`
    - Or use a reverse proxy that terminates TLS
+
+4. Start the server and register your first user.
+
+## Customization
+
+### Terminal Themes
+
+Import iTerm2 color schemes from the Settings page:
+1. Go to Settings > Terminal Themes
+2. Paste the contents of an `.itermcolors` file
+3. Give it a name and click Import
+
+Find themes at [iterm2colorschemes.com](https://iterm2colorschemes.com).
+
+### Custom Fonts
+
+Upload monospace fonts for the terminal:
+1. Go to Settings > Terminal Font
+2. Click "Choose File" and select a `.ttf`, `.otf`, `.woff`, or `.woff2` file
+3. Select the uploaded font to activate it
+
+### Font Size
+
+Adjust the terminal font size (8-32px) from Settings > Font Size.
