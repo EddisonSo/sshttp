@@ -62,6 +62,9 @@ export function connectShell(token: string, callbacks: ShellCallbacks, sessionId
   // TextDecoder for converting binary to string
   const textDecoder = new TextDecoder('utf-8')
 
+  // Track if session has exited (suppress errors after clean exit)
+  let exited = false
+
   // File transfer state
   let fileTransferCallbacks: FileTransferCallbacks | null = null
   let fileTransferResolve: (() => void) | null = null
@@ -111,6 +114,7 @@ export function connectShell(token: string, callbacks: ShellCallbacks, sessionId
         break
 
       case FrameType.EXIT:
+        exited = true
         if (payload.length >= 4) {
           const view = new DataView(payload.buffer, payload.byteOffset)
           const exitCode = view.getUint32(0, false) // big endian
@@ -182,13 +186,17 @@ export function connectShell(token: string, callbacks: ShellCallbacks, sessionId
 
   ws.onerror = (e) => {
     console.error('[ws] WebSocket error:', e)
-    callbacks.onError(new Error('WebSocket error'))
+    if (!exited) {
+      callbacks.onError(new Error('WebSocket error'))
+    }
   }
 
   ws.onclose = (e) => {
     console.log('[ws] WebSocket closed:', e.code, e.reason, 'wasClean:', e.wasClean)
     window.removeEventListener('beforeunload', handleBeforeUnload)
-    callbacks.onClose()
+    if (!exited) {
+      callbacks.onClose()
+    }
     // Reject any pending file transfer
     if (fileTransferReject) {
       fileTransferReject(new Error('Connection closed'))
@@ -294,6 +302,7 @@ export function connectShell(token: string, callbacks: ShellCallbacks, sessionId
   }
 
   const close = () => {
+    exited = true // Suppress error/close callbacks on intentional close
     window.removeEventListener('beforeunload', handleBeforeUnload)
     ws.close()
   }

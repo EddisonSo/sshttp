@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useCallback, useState } from 'react'
 import { connectShell, ShellConnection, FileTransferCallbacks } from '../lib/ws'
 import type { XTermHandle } from '../components/XTerm'
 
@@ -134,7 +134,8 @@ export function useTerminal({ token, sessionId, isActive = true, onExit, onError
   // When tab becomes hidden, send 0x0 resize to exclude this client
   // from the session's min-size calculation. The XTerm isActive effect
   // will send proper dimensions when the tab becomes visible again.
-  useEffect(() => {
+  // useLayoutEffect runs before paint, preventing a single-frame "Viewer Mode" flash
+  useLayoutEffect(() => {
     if (isActive) {
       // Optimistically assume writer to avoid a "Viewer Mode" flash during the
       // debounce + RTT before the server re-confirms our write state.

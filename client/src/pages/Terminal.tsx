@@ -534,9 +534,8 @@ export default function Terminal() {
                 dragOverTab === tab.id ? 'ring-2 ring-blue-500 ring-inset' : ''
               }`}
               style={{
-                minWidth: tabs.length <= 3 ? '150px' : '100px',
-                maxWidth: tabs.length <= 3 ? '250px' : '180px',
-                flex: tabs.length <= 5 ? '1 1 auto' : '0 0 auto',
+                minWidth: '100px',
+                flex: '1 1 0',
               }}
               onClick={() => setActiveTab(tab.id)}
             >
