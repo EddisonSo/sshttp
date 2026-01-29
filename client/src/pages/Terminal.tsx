@@ -46,6 +46,7 @@ function TerminalTab({
   const { termRef, handleData, handleResize, handleFileDrop, fileUpload, isWriter, clientCount } = useTerminal({
     token,
     sessionId,
+    isActive,
     onExit,
     onError,
     onFileComplete,

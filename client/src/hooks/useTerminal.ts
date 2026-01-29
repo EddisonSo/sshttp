@@ -5,6 +5,7 @@ import type { XTermHandle } from '../components/XTerm'
 interface UseTerminalOptions {
   token: string
   sessionId?: string
+  isActive?: boolean
   onExit?: (code: number) => void
   onError?: (error: Error) => void
   onFileProgress?: (bytesUploaded: number, totalBytes: number) => void
@@ -20,7 +21,7 @@ interface FileUploadState {
   totalBytes: number
 }
 
-export function useTerminal({ token, sessionId, onExit, onError, onFileProgress, onFileComplete, onFileError, onSessionsChange }: UseTerminalOptions) {
+export function useTerminal({ token, sessionId, isActive = true, onExit, onError, onFileProgress, onFileComplete, onFileError, onSessionsChange }: UseTerminalOptions) {
   const termRef = useRef<XTermHandle>(null)
   const connRef = useRef<ShellConnection | null>(null)
   const pendingDataRef = useRef<string[]>([]) // Buffer data until terminal is ready
@@ -129,6 +130,14 @@ export function useTerminal({ token, sessionId, onExit, onError, onFileProgress,
       pendingDataRef.current = []
     }
   }, [token, sessionId])
+
+  // When tab becomes hidden, send 0x0 resize to exclude this client
+  // from the session's min-size calculation. The XTerm isActive effect
+  // will send proper dimensions when the tab becomes visible again.
+  useEffect(() => {
+    if (isActive) return
+    connRef.current?.resize(0, 0)
+  }, [isActive])
 
   // Handle user input
   // Filter out terminal response sequences that shouldn't be sent as user input
