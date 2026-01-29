@@ -352,12 +352,19 @@ func (s *Session) AddClientWithScrollback(clientID string, cols, rows uint16, wr
 
 	s.clientsMu.Lock()
 
-	// Grant write access if no current writer
+	// Grant write access if no current writer or current writer is inactive
+	var demotedWriter *Client
 	grantWrite := s.writerClientID == ""
 	if !grantWrite {
-		// Check if current writer still exists (handles race condition on reload)
-		if _, exists := s.clients[s.writerClientID]; !exists {
-			s.writerClientID = "" // Clear stale writer
+		if currentWriter, exists := s.clients[s.writerClientID]; !exists {
+			// Writer no longer exists (stale)
+			s.writerClientID = ""
+			grantWrite = true
+		} else if currentWriter.Cols == 0 && currentWriter.Rows == 0 {
+			// Writer is inactive (hidden tab) — take over
+			currentWriter.IsWriter = false
+			demotedWriter = currentWriter
+			s.writerClientID = ""
 			grantWrite = true
 		}
 	}
@@ -396,6 +403,11 @@ func (s *Session) AddClientWithScrollback(clientID string, cols, rows uint16, wr
 
 	s.clientsMu.Unlock()
 
+	// Notify demoted writer (outside lock)
+	if demotedWriter != nil && demotedWriter.OnDemoted != nil {
+		demotedWriter.OnDemoted()
+	}
+
 	// Start output broadcaster on first client
 	s.outputOnce.Do(func() {
 		go s.broadcastOutput()
@@ -417,14 +429,26 @@ func (s *Session) RemoveClient(clientID string) {
 
 	var promotedClient *Client
 
-	// If the writer left, promote the first remaining client
+	// If the writer left, promote an active client (non-zero dims) first
 	if wasWriter {
 		s.writerClientID = ""
+		// Prefer a client that is actively viewing (non-zero dimensions)
 		for id, c := range s.clients {
-			c.IsWriter = true
-			s.writerClientID = id
-			promotedClient = c
-			break
+			if c.Cols > 0 && c.Rows > 0 {
+				c.IsWriter = true
+				s.writerClientID = id
+				promotedClient = c
+				break
+			}
+		}
+		// Fall back to any client if no active ones
+		if promotedClient == nil {
+			for id, c := range s.clients {
+				c.IsWriter = true
+				s.writerClientID = id
+				promotedClient = c
+				break
+			}
 		}
 	}
 
