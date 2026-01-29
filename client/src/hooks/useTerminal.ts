@@ -80,8 +80,9 @@ export function useTerminal({ token, sessionId, onExit, onError, onFileProgress,
         setConnected(false)
       },
       onOpen: () => {
-        // Send initial size immediately on connection
-        // Retry a few times in case terminal isn't ready yet
+        // Send initial size once terminal is ready and visible
+        // Hidden tabs (display:hidden) can't measure dimensions properly,
+        // so we skip the resize here and let the isActive useEffect handle it
         const sendSize = (retries = 5) => {
           const size = termRef.current?.fit()
           if (size && size.cols > 0 && size.rows > 0) {
@@ -96,10 +97,9 @@ export function useTerminal({ token, sessionId, onExit, onError, onFileProgress,
             }
           } else if (retries > 0) {
             setTimeout(() => sendSize(retries - 1), 100)
-          } else {
-            // Fallback to default size
-            conn.resize(80, 24)
           }
+          // No fallback — if terminal isn't visible, the isActive effect
+          // will send the resize when the tab becomes active
         }
         sendSize()
       },

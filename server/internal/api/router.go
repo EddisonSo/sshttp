@@ -98,6 +98,7 @@ func (s *Server) NotifySessionsChanged(userID string) {
 		uc.WriteMu.Lock()
 		uc.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		uc.Conn.WriteMessage(websocket.BinaryMessage, frame)
+		uc.Conn.SetWriteDeadline(time.Time{}) // Clear deadline so data writes don't inherit it
 		uc.WriteMu.Unlock()
 	}
 }

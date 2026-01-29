@@ -129,6 +129,11 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
       }
     },
     fit: () => {
+      // If container is hidden (e.g. inactive tab), return 0x0 to signal
+      // that dimensions can't be measured — caller should skip the resize
+      if (!containerRef.current || containerRef.current.offsetWidth === 0 || containerRef.current.offsetHeight === 0) {
+        return { cols: 0, rows: 0 }
+      }
       fitAddonRef.current?.fit()
       const cols = terminalRef.current?.cols ?? 80
       const rows = terminalRef.current?.rows ?? 24
@@ -215,8 +220,9 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
       terminal.onData(onData)
     }
 
-    // Handle resize
+    // Handle resize - skip if container is hidden (e.g. inactive tab)
     const handleResize = () => {
+      if (!containerRef.current || containerRef.current.offsetWidth === 0) return
       fitAddon.fit()
       if (onResize) {
         onResize(terminal.cols, terminal.rows)
@@ -238,6 +244,7 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
       webglAddonRef.current = null
 
       requestAnimationFrame(() => {
+        if (!containerRef.current || containerRef.current.offsetWidth === 0) return
         fitAddon.fit()
         if (onResize) {
           onResize(terminal.cols, terminal.rows)
@@ -320,6 +327,7 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
 
     requestAnimationFrame(() => {
       if (!terminalRef.current || !fitAddonRef.current) return
+      if (!containerRef.current || containerRef.current.offsetWidth === 0) return
       fitAddonRef.current.fit()
       if (onResize) {
         onResize(terminalRef.current.cols, terminalRef.current.rows)

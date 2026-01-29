@@ -408,11 +408,12 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 			case <-ticker.C:
 				writeMu.Lock()
 				conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
-				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					writeMu.Unlock()
+				err := conn.WriteMessage(websocket.PingMessage, nil)
+				conn.SetWriteDeadline(time.Time{}) // Clear deadline so data writes don't inherit it
+				writeMu.Unlock()
+				if err != nil {
 					return
 				}
-				writeMu.Unlock()
 			case <-session.ExitChan():
 				return
 			case <-done:
