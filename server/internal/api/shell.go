@@ -463,6 +463,10 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 				rows := binary.BigEndian.Uint16(payload[2:4])
 
 				if !clientRegistered {
+					// Don't register with zero dimensions (hidden tab)
+					if cols == 0 && rows == 0 {
+						continue
+					}
 					// First resize - register client and send scrollback atomically
 					// This ensures no output is missed or duplicated
 					clientRegistered = true

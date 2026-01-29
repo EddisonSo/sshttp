@@ -535,6 +535,7 @@ export default function Terminal() {
               }`}
               style={{
                 minWidth: '100px',
+                maxWidth: '250px',
                 flex: '1 1 0',
               }}
               onClick={() => setActiveTab(tab.id)}

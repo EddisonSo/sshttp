@@ -378,8 +378,8 @@ func (s *Session) AddClientWithScrollback(clientID string, cols, rows uint16, wr
 		IsWriter:      grantWrite,
 	}
 
-	// Notify all clients of the new count
-	count := len(s.clients)
+	// Notify all clients of the new active count (excludes hidden tabs with 0x0 dims)
+	count := s.activeClientCount()
 	for _, c := range s.clients {
 		if c.OnClientCount != nil {
 			go c.OnClientCount(count)
@@ -428,7 +428,8 @@ func (s *Session) RemoveClient(clientID string) {
 		}
 	}
 
-	count := len(s.clients)
+	activeCount := s.activeClientCount()
+	totalCount := len(s.clients)
 
 	// Collect callbacks for client count notification
 	var countCallbacks []func(int)
@@ -445,13 +446,13 @@ func (s *Session) RemoveClient(clientID string) {
 		promotedClient.OnPromoted()
 	}
 
-	// Notify remaining clients of new count
+	// Notify remaining clients of active count
 	for _, cb := range countCallbacks {
-		cb(count)
+		cb(activeCount)
 	}
 
 	// Recalculate terminal size if clients remain
-	if count > 0 {
+	if totalCount > 0 {
 		s.recalculateSize()
 	}
 }
@@ -475,6 +476,17 @@ func (s *Session) ClientCount() int {
 	s.clientsMu.RLock()
 	defer s.clientsMu.RUnlock()
 	return len(s.clients)
+}
+
+// activeClientCount returns the number of clients with non-zero dimensions (must hold clientsMu)
+func (s *Session) activeClientCount() int {
+	count := 0
+	for _, c := range s.clients {
+		if c.Cols > 0 && c.Rows > 0 {
+			count++
+		}
+	}
+	return count
 }
 
 // UpdateClientSize updates a client's terminal dimensions
@@ -518,6 +530,19 @@ func (s *Session) UpdateClientSize(clientID string, cols, rows uint16) {
 
 	// Track if this client is becoming active (transitioning from 0x0 to real dims)
 	becomingActive := wasInactive && cols > 0 && rows > 0
+	becomingInactive := !wasInactive && cols == 0 && rows == 0
+
+	// If active count changed, collect callbacks to notify
+	var countCallbacks []func(int)
+	var activeCount int
+	if becomingActive || becomingInactive {
+		activeCount = s.activeClientCount()
+		for _, c := range s.clients {
+			if c.OnClientCount != nil {
+				countCallbacks = append(countCallbacks, c.OnClientCount)
+			}
+		}
+	}
 
 	s.clientsMu.Unlock()
 
@@ -539,6 +564,11 @@ func (s *Session) UpdateClientSize(clientID string, cols, rows uint16) {
 		} else if !client.IsWriter && client.OnDemoted != nil {
 			client.OnDemoted()
 		}
+	}
+
+	// Notify all clients of updated active count
+	for _, cb := range countCallbacks {
+		cb(activeCount)
 	}
 
 	s.recalculateSize()
