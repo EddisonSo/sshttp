@@ -135,7 +135,19 @@ export function useTerminal({ token, sessionId, isActive = true, onExit, onError
   // from the session's min-size calculation. The XTerm isActive effect
   // will send proper dimensions when the tab becomes visible again.
   useEffect(() => {
-    if (isActive) return
+    if (isActive) {
+      // Optimistically assume writer to avoid a "Viewer Mode" flash during the
+      // debounce + RTT before the server re-confirms our write state.
+      // The server re-sends FrameWriteState when we transition from 0x0 to real dims,
+      // so a genuine viewer will be corrected.
+      setIsWriter(true)
+      return
+    }
+    // Cancel any pending debounced resize so it doesn't overwrite our 0x0
+    if (resizeTimeoutRef.current) {
+      clearTimeout(resizeTimeoutRef.current)
+      resizeTimeoutRef.current = null
+    }
     connRef.current?.resize(0, 0)
   }, [isActive])
 

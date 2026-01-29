@@ -333,6 +333,13 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 		log.Printf("client %s promoted to writer for session %s", clientID, session.ID)
 	}
 
+	// Callback when this client loses write access (switched away from tab)
+	onDemoted := func() {
+		isWriter = false
+		sendWriteState(false)
+		log.Printf("client %s demoted from writer for session %s", clientID, session.ID)
+	}
+
 	// Callback when terminal size changes (tmux-style min dimensions)
 	onSizeChange := func(cols, rows uint16) {
 		frame := make([]byte, 5)
@@ -459,7 +466,7 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 					// First resize - register client and send scrollback atomically
 					// This ensures no output is missed or duplicated
 					clientRegistered = true
-					_, isWriter = session.AddClientWithScrollback(clientID, cols, rows, writeToClient, onPromoted, onSizeChange, onClientCount)
+					_, isWriter = session.AddClientWithScrollback(clientID, cols, rows, writeToClient, onPromoted, onDemoted, onSizeChange, onClientCount)
 
 					// Notify client of their write status
 					sendWriteState(isWriter)

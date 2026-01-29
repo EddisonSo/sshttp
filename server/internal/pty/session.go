@@ -95,6 +95,7 @@ type Client struct {
 	Rows           uint16
 	Writer         func([]byte) error
 	OnPromoted     func()                    // Called when this client is promoted to writer
+	OnDemoted      func()                    // Called when this client loses write access
 	OnSizeChange   func(cols, rows uint16)   // Called when terminal size changes
 	OnClientCount  func(count int)           // Called when client count changes
 	IsWriter       bool                      // true if this client has write access to the terminal
@@ -341,7 +342,7 @@ func (s *Session) AddClient(clientID string, cols, rows uint16, writer func([]by
 // AddClientWithScrollback adds a client and sends scrollback atomically
 // This ensures no output is missed or duplicated between scrollback and live broadcasts
 // Returns true if this client was granted write access (first client gets write access)
-func (s *Session) AddClientWithScrollback(clientID string, cols, rows uint16, writer func([]byte) error, onPromoted func(), onSizeChange func(cols, rows uint16), onClientCount func(count int)) (ok bool, isWriter bool) {
+func (s *Session) AddClientWithScrollback(clientID string, cols, rows uint16, writer func([]byte) error, onPromoted func(), onDemoted func(), onSizeChange func(cols, rows uint16), onClientCount func(count int)) (ok bool, isWriter bool) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -371,6 +372,7 @@ func (s *Session) AddClientWithScrollback(clientID string, cols, rows uint16, wr
 		Rows:          rows,
 		Writer:        writer,
 		OnPromoted:    onPromoted,
+		OnDemoted:     onDemoted,
 		OnSizeChange:  onSizeChange,
 		OnClientCount: onClientCount,
 		IsWriter:      grantWrite,
@@ -476,13 +478,69 @@ func (s *Session) ClientCount() int {
 }
 
 // UpdateClientSize updates a client's terminal dimensions
+// If the writer sends 0x0 (e.g. switched to a different tab), promote another active client
 func (s *Session) UpdateClientSize(clientID string, cols, rows uint16) {
 	s.clientsMu.Lock()
-	if client, ok := s.clients[clientID]; ok {
-		client.Cols = cols
-		client.Rows = rows
+
+	client, ok := s.clients[clientID]
+	if !ok {
+		s.clientsMu.Unlock()
+		return
 	}
+
+	wasInactive := client.Cols == 0 && client.Rows == 0
+	client.Cols = cols
+	client.Rows = rows
+
+	// If the writer just went inactive (0x0), promote another client that has real dimensions
+	var demotedClient *Client
+	var promotedClient *Client
+	if cols == 0 && rows == 0 && s.writerClientID == clientID {
+		client.IsWriter = false
+		s.writerClientID = ""
+		demotedClient = client
+		for id, c := range s.clients {
+			if id != clientID && c.Cols > 0 && c.Rows > 0 {
+				c.IsWriter = true
+				s.writerClientID = id
+				promotedClient = c
+				break
+			}
+		}
+	}
+
+	// If a client becomes active (non-zero dims) and there's no writer, claim it
+	if cols > 0 && rows > 0 && s.writerClientID == "" {
+		client.IsWriter = true
+		s.writerClientID = clientID
+		promotedClient = client
+	}
+
+	// Track if this client is becoming active (transitioning from 0x0 to real dims)
+	becomingActive := wasInactive && cols > 0 && rows > 0
+
 	s.clientsMu.Unlock()
+
+	// Notify demoted client outside lock
+	if demotedClient != nil && demotedClient.OnDemoted != nil {
+		demotedClient.OnDemoted()
+	}
+
+	// Notify promoted client outside lock
+	if promotedClient != nil && promotedClient.OnPromoted != nil {
+		promotedClient.OnPromoted()
+	}
+
+	// Re-confirm write state to a client becoming active, so they have the correct
+	// state immediately (they may have been promoted/demoted while their tab was hidden)
+	if becomingActive && demotedClient == nil && promotedClient == nil {
+		if client.IsWriter && client.OnPromoted != nil {
+			client.OnPromoted()
+		} else if !client.IsWriter && client.OnDemoted != nil {
+			client.OnDemoted()
+		}
+	}
+
 	s.recalculateSize()
 }
 
