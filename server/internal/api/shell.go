@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/eddison/sshttp/server/internal/middleware"
+	"github.com/eddison/sshttp/server/internal/pty"
 	"github.com/gorilla/websocket"
 )
 
@@ -310,34 +311,24 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 
 	// Track if client has been registered with session
 	clientRegistered := false
-	isWriter := false // true if this client has write access
 
 	// Channel to signal handler exit to goroutines
 	done := make(chan struct{})
 
-	// Helper to send write state to client
-	sendWriteState := func(writer bool) {
+	// Callback when write state changes for this client
+	onWriteStateChange := func(isWriter bool) {
 		writeState := byte(0)
-		if writer {
+		if isWriter {
 			writeState = 1
 		}
 		writeMu.Lock()
 		conn.WriteMessage(websocket.BinaryMessage, []byte{FrameWriteState, writeState})
 		writeMu.Unlock()
-	}
-
-	// Callback when this client is promoted to writer
-	onPromoted := func() {
-		isWriter = true
-		sendWriteState(true)
-		log.Printf("client %s promoted to writer for session %s", clientID, session.ID)
-	}
-
-	// Callback when this client loses write access (switched away from tab)
-	onDemoted := func() {
-		isWriter = false
-		sendWriteState(false)
-		log.Printf("client %s demoted from writer for session %s", clientID, session.ID)
+		if isWriter {
+			log.Printf("client %s promoted to writer for session %s", clientID, session.ID)
+		} else {
+			log.Printf("client %s demoted from writer for session %s", clientID, session.ID)
+		}
 	}
 
 	// Callback when terminal size changes (tmux-style min dimensions)
@@ -449,7 +440,7 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 		switch frameType {
 		case FrameStdin:
 			// Only the writer can send input to the terminal
-			if !isWriter {
+			if !session.CanWrite(clientID) {
 				continue
 			}
 			if _, err := session.Write(payload); err != nil {
@@ -468,26 +459,18 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 					// First resize - register client and send scrollback atomically
-					// This ensures no output is missed or duplicated
 					clientRegistered = true
-					_, isWriter = session.AddClientWithScrollback(clientID, cols, rows, writeToClient, onPromoted, onDemoted, onSizeChange, onClientCount)
-
-					// Notify client of their write status
-					sendWriteState(isWriter)
-					if isWriter {
-						log.Printf("client %s is the writer for session %s", clientID, session.ID)
-					} else {
-						log.Printf("client %s is a viewer for session %s", clientID, session.ID)
-					}
+					session.RegisterClient(clientID, cols, rows, writeToClient, onWriteStateChange, onSizeChange, onClientCount)
+				} else if cols == 0 && rows == 0 {
+					session.SetClientActivity(clientID, pty.ClientInactive, 0, 0)
 				} else {
-					// Update client's size
-					session.UpdateClientSize(clientID, cols, rows)
+					session.SetClientActivity(clientID, pty.ClientActive, cols, rows)
 				}
 			}
 
 		case FrameFileStart:
 			// Only the writer can upload files
-			if !isWriter {
+			if !session.CanWrite(clientID) {
 				sendFileAck(conn, FileAckError, "viewer cannot upload files")
 				continue
 			}
@@ -570,7 +553,7 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 
 		case FrameFileChunk:
 			// Only the writer can upload files
-			if !isWriter {
+			if !session.CanWrite(clientID) {
 				sendFileAck(conn, FileAckError, "viewer cannot upload files")
 				continue
 			}

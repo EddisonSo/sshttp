@@ -88,17 +88,40 @@ func (rb *RingBuffer) Bytes() []byte {
 // DefaultScrollbackSize is the default size of the scrollback buffer (64KB)
 const DefaultScrollbackSize = 64 * 1024
 
+// ClientActivity represents whether a client is actively viewing the terminal
+type ClientActivity int
+
+const (
+	ClientInactive ClientActivity = iota
+	ClientActive
+)
+
+// notifications batches outbound callbacks to dispatch after lock release
+type notifications struct {
+	calls []func()
+}
+
+func (n *notifications) add(fn func()) {
+	n.calls = append(n.calls, fn)
+}
+
+func (n *notifications) dispatch() {
+	for _, fn := range n.calls {
+		fn()
+	}
+}
+
 // Client represents a connected WebSocket client
 type Client struct {
-	ID             string
-	Cols           uint16
-	Rows           uint16
-	Writer         func([]byte) error
-	OnPromoted     func()                    // Called when this client is promoted to writer
-	OnDemoted      func()                    // Called when this client loses write access
-	OnSizeChange   func(cols, rows uint16)   // Called when terminal size changes
-	OnClientCount  func(count int)           // Called when client count changes
-	IsWriter       bool                      // true if this client has write access to the terminal
+	ID                 string
+	Cols               uint16
+	Rows               uint16
+	Activity           ClientActivity
+	JoinedAt           time.Time
+	Writer             func([]byte) error
+	OnWriteStateChange func(isWriter bool)     // Called when write access changes
+	OnSizeChange       func(cols, rows uint16) // Called when terminal size changes
+	OnClientCount      func(count int)         // Called when client count changes
 }
 
 type Session struct {
@@ -116,6 +139,7 @@ type Session struct {
 
 	// Multiplexing support
 	clients        map[string]*Client
+	clientOrder    []string // insertion-ordered client IDs for deterministic iteration
 	clientsMu      sync.RWMutex
 	writerClientID string // ID of the client with write access (empty = no writer)
 	outputDone     chan struct{}
@@ -311,8 +335,9 @@ func (m *SessionManager) ListUserSessions(userID string) []SessionInfo {
 	return sessions
 }
 
-// AddClient adds a new client connection to the session
-func (s *Session) AddClient(clientID string, cols, rows uint16, writer func([]byte) error) bool {
+// RegisterClient adds a client and sends scrollback atomically.
+// The onWriteStateChange callback fires after the lock is released.
+func (s *Session) RegisterClient(clientID string, cols, rows uint16, writer func([]byte) error, onWriteStateChange func(bool), onSizeChange func(uint16, uint16), onClientCount func(int)) bool {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -320,82 +345,44 @@ func (s *Session) AddClient(clientID string, cols, rows uint16, writer func([]by
 	}
 	s.mu.Unlock()
 
-	s.clientsMu.Lock()
-	s.clients[clientID] = &Client{
-		ID:     clientID,
-		Cols:   cols,
-		Rows:   rows,
-		Writer: writer,
-	}
-	s.clientsMu.Unlock()
-
-	// Start output broadcaster on first client
-	s.outputOnce.Do(func() {
-		go s.broadcastOutput()
-	})
-
-	// Recalculate terminal size
-	s.recalculateSize()
-	return true
-}
-
-// AddClientWithScrollback adds a client and sends scrollback atomically
-// This ensures no output is missed or duplicated between scrollback and live broadcasts
-// Returns true if this client was granted write access (first client gets write access)
-func (s *Session) AddClientWithScrollback(clientID string, cols, rows uint16, writer func([]byte) error, onPromoted func(), onDemoted func(), onSizeChange func(cols, rows uint16), onClientCount func(count int)) (ok bool, isWriter bool) {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return false, false
-	}
-	s.mu.Unlock()
+	var notify notifications
 
 	s.clientsMu.Lock()
 
-	// Grant write access if no current writer or current writer is inactive
-	var demotedWriter *Client
-	grantWrite := s.writerClientID == ""
-	if !grantWrite {
-		if currentWriter, exists := s.clients[s.writerClientID]; !exists {
-			// Writer no longer exists (stale)
-			s.writerClientID = ""
-			grantWrite = true
-		} else if currentWriter.Cols == 0 && currentWriter.Rows == 0 {
-			// Writer is inactive (hidden tab) — take over
-			currentWriter.IsWriter = false
-			demotedWriter = currentWriter
-			s.writerClientID = ""
-			grantWrite = true
-		}
-	}
-	if grantWrite {
-		s.writerClientID = clientID
-	}
-
-	// Add client
 	s.clients[clientID] = &Client{
-		ID:            clientID,
-		Cols:          cols,
-		Rows:          rows,
-		Writer:        writer,
-		OnPromoted:    onPromoted,
-		OnDemoted:     onDemoted,
-		OnSizeChange:  onSizeChange,
-		OnClientCount: onClientCount,
-		IsWriter:      grantWrite,
+		ID:                 clientID,
+		Cols:               cols,
+		Rows:               rows,
+		Activity:           ClientActive,
+		JoinedAt:           time.Now(),
+		Writer:             writer,
+		OnWriteStateChange: onWriteStateChange,
+		OnSizeChange:       onSizeChange,
+		OnClientCount:      onClientCount,
+	}
+	s.clientOrder = append(s.clientOrder, clientID)
+
+	s.electWriter(&notify)
+
+	// Always notify the new client of their write state
+	if onWriteStateChange != nil {
+		isWriter := s.writerClientID == clientID
+		cb := onWriteStateChange
+		w := isWriter
+		notify.add(func() { cb(w) })
 	}
 
-	// Notify all clients of the new active count (excludes hidden tabs with 0x0 dims)
-	count := s.activeClientCount()
+	// Notify all clients of new active count
+	count := s.countActive()
 	for _, c := range s.clients {
 		if c.OnClientCount != nil {
-			go c.OnClientCount(count)
+			cb := c.OnClientCount
+			cnt := count
+			notify.add(func() { cb(cnt) })
 		}
 	}
 
-	// Send scrollback to all clients so they can see previous terminal content
-	// Since we use min dimensions across all clients (tmux strategy),
-	// scrollback is always compatible with the current terminal size
+	// Send scrollback atomically under lock
 	scrollback := s.scrollback.Bytes()
 	if len(scrollback) > 0 {
 		writer(scrollback)
@@ -403,81 +390,158 @@ func (s *Session) AddClientWithScrollback(clientID string, cols, rows uint16, wr
 
 	s.clientsMu.Unlock()
 
-	// Notify demoted writer (outside lock)
-	if demotedWriter != nil && demotedWriter.OnDemoted != nil {
-		demotedWriter.OnDemoted()
-	}
-
 	// Start output broadcaster on first client
 	s.outputOnce.Do(func() {
 		go s.broadcastOutput()
 	})
 
-	// Recalculate terminal size (uses min of all clients)
-	s.recalculateSize()
+	notify.dispatch()
 
-	return true, grantWrite
+	s.recalculateSize()
+	return true
 }
 
-// RemoveClient removes a client connection from the session
-// If the removed client was the writer, promotes the next client to writer
-func (s *Session) RemoveClient(clientID string) {
+// SetClientActivity handles all client activity transitions.
+//   - Active->Inactive: writer is transferred if needed
+//   - Inactive->Active: writer election runs, write state is re-confirmed
+//   - Active->Active: fast path, just updates dimensions
+func (s *Session) SetClientActivity(clientID string, activity ClientActivity, cols, rows uint16) {
+	var notify notifications
+
 	s.clientsMu.Lock()
 
-	wasWriter := s.writerClientID == clientID
-	delete(s.clients, clientID)
-
-	var promotedClient *Client
-
-	// If the writer left, promote an active client (non-zero dims) first
-	if wasWriter {
-		s.writerClientID = ""
-		// Prefer a client that is actively viewing (non-zero dimensions)
-		for id, c := range s.clients {
-			if c.Cols > 0 && c.Rows > 0 {
-				c.IsWriter = true
-				s.writerClientID = id
-				promotedClient = c
-				break
-			}
-		}
-		// Fall back to any client if no active ones
-		if promotedClient == nil {
-			for id, c := range s.clients {
-				c.IsWriter = true
-				s.writerClientID = id
-				promotedClient = c
-				break
-			}
-		}
+	client, ok := s.clients[clientID]
+	if !ok {
+		s.clientsMu.Unlock()
+		return
 	}
 
-	activeCount := s.activeClientCount()
-	totalCount := len(s.clients)
+	oldActivity := client.Activity
+	client.Cols = cols
+	client.Rows = rows
+	client.Activity = activity
 
-	// Collect callbacks for client count notification
-	var countCallbacks []func(int)
-	for _, c := range s.clients {
-		if c.OnClientCount != nil {
-			countCallbacks = append(countCallbacks, c.OnClientCount)
+	activityChanged := oldActivity != activity
+
+	if activityChanged {
+		s.electWriter(&notify)
+
+		// Re-confirm write state when becoming active
+		if activity == ClientActive && client.OnWriteStateChange != nil {
+			isWriter := s.writerClientID == clientID
+			cb := client.OnWriteStateChange
+			w := isWriter
+			notify.add(func() { cb(w) })
+		}
+
+		// Notify all clients of updated active count
+		count := s.countActive()
+		for _, c := range s.clients {
+			if c.OnClientCount != nil {
+				cb := c.OnClientCount
+				cnt := count
+				notify.add(func() { cb(cnt) })
+			}
 		}
 	}
 
 	s.clientsMu.Unlock()
 
-	// Notify promoted client (outside lock to avoid deadlock)
-	if promotedClient != nil && promotedClient.OnPromoted != nil {
-		promotedClient.OnPromoted()
+	notify.dispatch()
+	s.recalculateSize()
+}
+
+// RemoveClient removes a client and runs writer election if needed.
+func (s *Session) RemoveClient(clientID string) {
+	var notify notifications
+
+	s.clientsMu.Lock()
+
+	delete(s.clients, clientID)
+	for i, id := range s.clientOrder {
+		if id == clientID {
+			s.clientOrder = append(s.clientOrder[:i], s.clientOrder[i+1:]...)
+			break
+		}
 	}
 
-	// Notify remaining clients of active count
-	for _, cb := range countCallbacks {
-		cb(activeCount)
+	if s.writerClientID == clientID {
+		s.writerClientID = ""
 	}
 
-	// Recalculate terminal size if clients remain
+	s.electWriter(&notify)
+
+	count := s.countActive()
+	for _, c := range s.clients {
+		if c.OnClientCount != nil {
+			cb := c.OnClientCount
+			cnt := count
+			notify.add(func() { cb(cnt) })
+		}
+	}
+
+	totalCount := len(s.clients)
+
+	s.clientsMu.Unlock()
+
+	notify.dispatch()
+
 	if totalCount > 0 {
 		s.recalculateSize()
+	}
+}
+
+// electWriter is the single centralized writer election function.
+// Must be called with clientsMu held. Batches notifications into notify.
+func (s *Session) electWriter(notify *notifications) {
+	// If current writer is still active, no-op
+	if s.writerClientID != "" {
+		if writer, exists := s.clients[s.writerClientID]; exists && writer.Activity == ClientActive {
+			return
+		}
+	}
+
+	oldWriterID := s.writerClientID
+	newWriterID := ""
+
+	// Find first active client in insertion order
+	for _, id := range s.clientOrder {
+		if c, exists := s.clients[id]; exists && c.Activity == ClientActive {
+			newWriterID = id
+			break
+		}
+	}
+
+	// Fallback: any client if no active ones
+	if newWriterID == "" {
+		for _, id := range s.clientOrder {
+			if _, exists := s.clients[id]; exists {
+				newWriterID = id
+				break
+			}
+		}
+	}
+
+	if newWriterID == oldWriterID {
+		return
+	}
+
+	s.writerClientID = newWriterID
+
+	// Notify old writer they lost access
+	if oldWriterID != "" {
+		if oldWriter, exists := s.clients[oldWriterID]; exists && oldWriter.OnWriteStateChange != nil {
+			cb := oldWriter.OnWriteStateChange
+			notify.add(func() { cb(false) })
+		}
+	}
+
+	// Notify new writer they gained access
+	if newWriterID != "" {
+		if newWriter, exists := s.clients[newWriterID]; exists && newWriter.OnWriteStateChange != nil {
+			cb := newWriter.OnWriteStateChange
+			notify.add(func() { cb(true) })
+		}
 	}
 }
 
@@ -488,13 +552,6 @@ func (s *Session) CanWrite(clientID string) bool {
 	return s.writerClientID == clientID
 }
 
-// GetWriterClientID returns the current writer's client ID
-func (s *Session) GetWriterClientID() string {
-	s.clientsMu.RLock()
-	defer s.clientsMu.RUnlock()
-	return s.writerClientID
-}
-
 // ClientCount returns the number of connected clients
 func (s *Session) ClientCount() int {
 	s.clientsMu.RLock()
@@ -502,100 +559,15 @@ func (s *Session) ClientCount() int {
 	return len(s.clients)
 }
 
-// activeClientCount returns the number of clients with non-zero dimensions (must hold clientsMu)
-func (s *Session) activeClientCount() int {
+// countActive returns the number of active clients (must hold clientsMu)
+func (s *Session) countActive() int {
 	count := 0
 	for _, c := range s.clients {
-		if c.Cols > 0 && c.Rows > 0 {
+		if c.Activity == ClientActive {
 			count++
 		}
 	}
 	return count
-}
-
-// UpdateClientSize updates a client's terminal dimensions
-// If the writer sends 0x0 (e.g. switched to a different tab), promote another active client
-func (s *Session) UpdateClientSize(clientID string, cols, rows uint16) {
-	s.clientsMu.Lock()
-
-	client, ok := s.clients[clientID]
-	if !ok {
-		s.clientsMu.Unlock()
-		return
-	}
-
-	wasInactive := client.Cols == 0 && client.Rows == 0
-	client.Cols = cols
-	client.Rows = rows
-
-	// If the writer just went inactive (0x0), promote another client that has real dimensions
-	var demotedClient *Client
-	var promotedClient *Client
-	if cols == 0 && rows == 0 && s.writerClientID == clientID {
-		client.IsWriter = false
-		s.writerClientID = ""
-		demotedClient = client
-		for id, c := range s.clients {
-			if id != clientID && c.Cols > 0 && c.Rows > 0 {
-				c.IsWriter = true
-				s.writerClientID = id
-				promotedClient = c
-				break
-			}
-		}
-	}
-
-	// If a client becomes active (non-zero dims) and there's no writer, claim it
-	if cols > 0 && rows > 0 && s.writerClientID == "" {
-		client.IsWriter = true
-		s.writerClientID = clientID
-		promotedClient = client
-	}
-
-	// Track if this client is becoming active (transitioning from 0x0 to real dims)
-	becomingActive := wasInactive && cols > 0 && rows > 0
-	becomingInactive := !wasInactive && cols == 0 && rows == 0
-
-	// If active count changed, collect callbacks to notify
-	var countCallbacks []func(int)
-	var activeCount int
-	if becomingActive || becomingInactive {
-		activeCount = s.activeClientCount()
-		for _, c := range s.clients {
-			if c.OnClientCount != nil {
-				countCallbacks = append(countCallbacks, c.OnClientCount)
-			}
-		}
-	}
-
-	s.clientsMu.Unlock()
-
-	// Notify demoted client outside lock
-	if demotedClient != nil && demotedClient.OnDemoted != nil {
-		demotedClient.OnDemoted()
-	}
-
-	// Notify promoted client outside lock
-	if promotedClient != nil && promotedClient.OnPromoted != nil {
-		promotedClient.OnPromoted()
-	}
-
-	// Re-confirm write state to a client becoming active, so they have the correct
-	// state immediately (they may have been promoted/demoted while their tab was hidden)
-	if becomingActive && demotedClient == nil && promotedClient == nil {
-		if client.IsWriter && client.OnPromoted != nil {
-			client.OnPromoted()
-		} else if !client.IsWriter && client.OnDemoted != nil {
-			client.OnDemoted()
-		}
-	}
-
-	// Notify all clients of updated active count
-	for _, cb := range countCallbacks {
-		cb(activeCount)
-	}
-
-	s.recalculateSize()
 }
 
 // Minimum terminal dimensions to ensure usability
@@ -604,7 +576,7 @@ const (
 	MinTerminalRows uint16 = 10
 )
 
-// recalculateSize sets terminal to the minimum dimensions across all clients
+// recalculateSize sets terminal to the minimum dimensions across all active clients
 // This ensures content is formatted correctly for all connected screens (tmux strategy)
 func (s *Session) recalculateSize() {
 	s.clientsMu.RLock()
@@ -614,14 +586,16 @@ func (s *Session) recalculateSize() {
 		return
 	}
 
-	// Find minimum dimensions across all clients
+	// Find minimum dimensions across active clients
 	var minCols, minRows uint16 = 0xFFFF, 0xFFFF
 	for _, client := range s.clients {
-		if client.Cols > 0 && client.Cols < minCols {
-			minCols = client.Cols
-		}
-		if client.Rows > 0 && client.Rows < minRows {
-			minRows = client.Rows
+		if client.Activity == ClientActive {
+			if client.Cols < minCols {
+				minCols = client.Cols
+			}
+			if client.Rows < minRows {
+				minRows = client.Rows
+			}
 		}
 	}
 
@@ -681,7 +655,7 @@ func (s *Session) broadcastOutput() {
 			copy(data, buf[:n])
 
 			// Hold clientsMu while writing to scrollback AND broadcasting
-			// This ensures atomic operation with AddClientWithScrollback
+			// This ensures atomic operation with RegisterClient
 			s.clientsMu.Lock()
 			s.scrollback.Write(data)
 			clientCount := len(s.clients)
@@ -774,7 +748,6 @@ func (s *Session) Redraw() {
 		s.Cmd.Process.Signal(syscall.SIGWINCH)
 	}
 }
-
 
 // ExitChan returns a channel that's closed when the shell process exits
 func (s *Session) ExitChan() <-chan struct{} {
