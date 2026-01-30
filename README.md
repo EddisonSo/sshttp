@@ -22,8 +22,11 @@ sshttp makes shell access feel like modern login:
 - **Cross-Platform**: Consistent UX on Windows, macOS, and Linux via browser or Electron
 - **Web Terminal**: Full terminal emulation using xterm.js with WebGL rendering
 - **Real-time PTY**: WebSocket-based PTY streaming with resize support
+- **Multi-Session Tabs**: Create, rename, and manage multiple shell sessions per user
+- **Shared Sessions**: Writer/viewer multiplexing with real-time client count
 - **Single Port**: HTTPS only (443)
 - **No Local Keys**: No SSH agent or key files required
+- **File Upload**: Drag-and-drop file transfer to the terminal
 - **Security Hardened**: Rate limiting, CORS, CSP headers, JWT tokens, audit logging
 - **Customizable**: Import iTerm2 themes, upload custom fonts, adjustable font size
 
@@ -174,6 +177,7 @@ sshttp/
 │       ├── api/              # HTTP handlers
 │       ├── auth/             # WebAuthn + JWT
 │       ├── config/           # Configuration
+│       ├── mds/              # FIDO Alliance metadata service
 │       ├── middleware/       # HTTP middleware
 │       ├── pty/              # PTY session manager
 │       └── store/            # SQLite storage
@@ -192,6 +196,7 @@ sshttp/
 | Endpoint | Description |
 |----------|-------------|
 | `GET /register?rid=...` | Serves registration UI (only if rid valid) |
+| `GET /v1/register/info` | Returns registration info for a given rid |
 | `POST /v1/register/begin` | Returns `PublicKeyCredentialCreationOptions` |
 | `POST /v1/register/finish` | Verifies attestation, stores credential, invalidates rid |
 
@@ -201,13 +206,38 @@ sshttp/
 |----------|-------------|
 | `POST /v1/auth/begin` | Returns `PublicKeyCredentialRequestOptions` + state |
 | `POST /v1/auth/finish` | Verifies assertion, returns access token |
+| `POST /v1/auth/logout` | Invalidates the current session |
 
 ### Shell
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /v1/shell/open` | Creates session ID (optional) |
+| `GET /v1/shell/sessions` | Lists all sessions for the authenticated user |
+| `POST /v1/shell/sessions` | Creates a new shell session |
+| `POST /v1/shell/sessions/rename` | Renames an existing session |
+| `POST /v1/shell/sessions/delete` | Deletes a session |
 | `GET /v1/shell/stream` | WebSocket endpoint for PTY streaming |
+
+### Settings
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /v1/settings/keys` | Lists registered passkeys |
+| `POST /v1/settings/keys/delete` | Deletes a passkey |
+| `POST /v1/settings/keys/rename` | Renames a passkey |
+| `POST /v1/settings/keys/add/begin` | Begins adding a new passkey |
+| `POST /v1/settings/keys/add/finish` | Completes adding a new passkey |
+| `GET /v1/settings/prefs` | Gets user preferences |
+| `GET /v1/settings/themes` | Lists available themes |
+| `GET /v1/settings/themes/get` | Gets a specific theme |
+| `POST /v1/settings/themes/save` | Saves a new theme |
+| `POST /v1/settings/themes/delete` | Deletes a theme |
+| `POST /v1/settings/themes/active` | Sets the active theme |
+| `GET /v1/settings/fonts` | Lists uploaded fonts |
+| `GET /v1/settings/fonts/get` | Gets a specific font file |
+| `POST /v1/settings/fonts/upload` | Uploads a custom font |
+| `POST /v1/settings/fonts/delete` | Deletes a font |
+| `POST /v1/settings/fonts/active` | Sets the active font |
 
 ## WebSocket Protocol
 
@@ -222,6 +252,14 @@ Binary frames with type prefix:
 | FILE_START | `0x10` | Client -> Server | size:u32, name_len:u16, name:utf8 |
 | FILE_CHUNK | `0x11` | Client -> Server | offset:u32, data:bytes |
 | FILE_ACK | `0x12` | Server -> Client | status:u8, message?:utf8 |
+| WRITE_STATE | `0x20` | Server -> Client | 1=writer, 0=viewer |
+| SESSIONS_CHANGE | `0x21` | Server -> Client | (no payload) |
+| RESIZE_NOTIFY | `0x22` | Server -> Client | cols:u16, rows:u16 (big endian) |
+| CLIENT_COUNT | `0x23` | Server -> Client | count:u16 (big endian) |
+
+### Session Multiplexing
+
+Multiple clients can connect to the same shell session. The server assigns one client as the **writer** (can send input) and others as **viewers** (read-only). When the writer disconnects, a viewer is automatically promoted. The server notifies clients of state changes via `WRITE_STATE`, `CLIENT_COUNT`, and `SESSIONS_CHANGE` frames.
 
 ### File Transfer
 
@@ -288,6 +326,13 @@ make install
 # Create data directory
 sudo mkdir -p /var/lib/sshttp
 sudo chown $USER:$USER /var/lib/sshttp
+```
+
+### Development Mode
+
+```bash
+# Run frontend dev server + backend concurrently
+make dev
 ```
 
 ### Quick Restart (Development)
