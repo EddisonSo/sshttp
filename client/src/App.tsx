@@ -8,6 +8,7 @@ import { applyThemeToDocument } from './lib/themes'
 
 function App() {
   useEffect(() => {
+    document.title = window.location.hostname
     applyThemeToDocument()
 
     const handleStorageChange = (e: StorageEvent) => {
