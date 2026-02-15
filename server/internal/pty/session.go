@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"os/user"
@@ -87,6 +88,42 @@ func (rb *RingBuffer) Bytes() []byte {
 // DefaultScrollbackSize is the default size of the scrollback buffer (64KB)
 const DefaultScrollbackSize = 64 * 1024
 
+// ClientActivity represents whether a client is actively viewing the terminal
+type ClientActivity int
+
+const (
+	ClientInactive ClientActivity = iota
+	ClientActive
+)
+
+// notifications batches outbound callbacks to dispatch after lock release
+type notifications struct {
+	calls []func()
+}
+
+func (n *notifications) add(fn func()) {
+	n.calls = append(n.calls, fn)
+}
+
+func (n *notifications) dispatch() {
+	for _, fn := range n.calls {
+		fn()
+	}
+}
+
+// Client represents a connected WebSocket client
+type Client struct {
+	ID                 string
+	Cols               uint16
+	Rows               uint16
+	Activity           ClientActivity
+	JoinedAt           time.Time
+	Writer             func([]byte) error
+	OnWriteStateChange func(isWriter bool)     // Called when write access changes
+	OnSizeChange       func(cols, rows uint16) // Called when terminal size changes
+	OnClientCount      func(count int)         // Called when client count changes
+}
+
 type Session struct {
 	ID        string
 	UserID    string
@@ -98,9 +135,20 @@ type Session struct {
 
 	mu         sync.Mutex
 	closed     bool
-	attached   bool
 	scrollback *RingBuffer
-	onKick     func() // Called when this connection is kicked by a new one
+
+	// Multiplexing support
+	clients        map[string]*Client
+	clientOrder    []string // insertion-ordered client IDs for deterministic iteration
+	clientsMu      sync.RWMutex
+	writerClientID string // ID of the client with write access (empty = no writer)
+	outputDone     chan struct{}
+	outputOnce     sync.Once
+
+	// Exit tracking
+	exitChan chan struct{}
+	exitCode int
+	exitErr  error
 }
 
 type SessionManager struct {
@@ -179,7 +227,24 @@ func (m *SessionManager) CreateNamed(userID, name string) (*Session, error) {
 		CreatedAt:  time.Now(),
 		LastInput:  time.Now(),
 		scrollback: NewRingBuffer(DefaultScrollbackSize),
+		clients:    make(map[string]*Client),
+		outputDone: make(chan struct{}),
+		exitChan:   make(chan struct{}),
 	}
+
+	// Start exit watcher goroutine
+	go func() {
+		err := cmd.Wait()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				session.exitCode = exitErr.ExitCode()
+			} else {
+				session.exitCode = -1
+				session.exitErr = err
+			}
+		}
+		close(session.exitChan)
+	}()
 
 	m.sessions.Store(session.ID, session)
 	return session, nil
@@ -262,7 +327,7 @@ func (m *SessionManager) ListUserSessions(userID string) []SessionInfo {
 				ID:        session.ID,
 				Name:      session.Name,
 				CreatedAt: session.CreatedAt,
-				Attached:  session.attached,
+				Attached:  session.IsAttached(),
 			})
 		}
 		return true
@@ -270,39 +335,355 @@ func (m *SessionManager) ListUserSessions(userID string) []SessionInfo {
 	return sessions
 }
 
-// Attach marks a session as attached (kicks out previous connection if any)
-func (s *Session) Attach(onKick func()) bool {
+// RegisterClient adds a client and sends scrollback atomically.
+// The onWriteStateChange callback fires after the lock is released.
+func (s *Session) RegisterClient(clientID string, cols, rows uint16, writer func([]byte) error, onWriteStateChange func(bool), onSizeChange func(uint16, uint16), onClientCount func(int)) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return false
 	}
-	// If already attached, kick out the old connection
-	if s.attached && s.onKick != nil {
-		// Call outside the lock to avoid deadlock
-		kickCallback := s.onKick
-		s.mu.Unlock()
-		kickCallback()
-		s.mu.Lock()
+	s.mu.Unlock()
+
+	var notify notifications
+
+	s.clientsMu.Lock()
+
+	s.clients[clientID] = &Client{
+		ID:                 clientID,
+		Cols:               cols,
+		Rows:               rows,
+		Activity:           ClientActive,
+		JoinedAt:           time.Now(),
+		Writer:             writer,
+		OnWriteStateChange: onWriteStateChange,
+		OnSizeChange:       onSizeChange,
+		OnClientCount:      onClientCount,
 	}
-	s.attached = true
-	s.onKick = onKick
+	s.clientOrder = append(s.clientOrder, clientID)
+
+	s.electWriter(&notify)
+
+	// Always notify the new client of their write state
+	if onWriteStateChange != nil {
+		isWriter := s.writerClientID == clientID
+		cb := onWriteStateChange
+		w := isWriter
+		notify.add(func() { cb(w) })
+	}
+
+	// Notify all clients of new active count
+	count := s.countActive()
+	for _, c := range s.clients {
+		if c.OnClientCount != nil {
+			cb := c.OnClientCount
+			cnt := count
+			notify.add(func() { cb(cnt) })
+		}
+	}
+
+	// Send scrollback atomically under lock
+	scrollback := s.scrollback.Bytes()
+	if len(scrollback) > 0 {
+		writer(scrollback)
+	}
+
+	s.clientsMu.Unlock()
+
+	// Start output broadcaster on first client
+	s.outputOnce.Do(func() {
+		go s.broadcastOutput()
+	})
+
+	notify.dispatch()
+
+	s.recalculateSize()
 	return true
 }
 
-// Detach marks a session as detached
-func (s *Session) Detach() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.attached = false
+// SetClientActivity handles all client activity transitions.
+//   - Active->Inactive: writer is transferred if needed
+//   - Inactive->Active: writer election runs, write state is re-confirmed
+//   - Active->Active: fast path, just updates dimensions
+func (s *Session) SetClientActivity(clientID string, activity ClientActivity, cols, rows uint16) {
+	var notify notifications
+
+	s.clientsMu.Lock()
+
+	client, ok := s.clients[clientID]
+	if !ok {
+		s.clientsMu.Unlock()
+		return
+	}
+
+	oldActivity := client.Activity
+	client.Cols = cols
+	client.Rows = rows
+	client.Activity = activity
+
+	activityChanged := oldActivity != activity
+
+	if activityChanged {
+		s.electWriter(&notify)
+
+		// Re-confirm write state when becoming active
+		if activity == ClientActive && client.OnWriteStateChange != nil {
+			isWriter := s.writerClientID == clientID
+			cb := client.OnWriteStateChange
+			w := isWriter
+			notify.add(func() { cb(w) })
+		}
+
+		// Notify all clients of updated active count
+		count := s.countActive()
+		for _, c := range s.clients {
+			if c.OnClientCount != nil {
+				cb := c.OnClientCount
+				cnt := count
+				notify.add(func() { cb(cnt) })
+			}
+		}
+	}
+
+	s.clientsMu.Unlock()
+
+	notify.dispatch()
+	s.recalculateSize()
 }
 
-// IsAttached returns whether the session is attached
+// RemoveClient removes a client and runs writer election if needed.
+func (s *Session) RemoveClient(clientID string) {
+	var notify notifications
+
+	s.clientsMu.Lock()
+
+	delete(s.clients, clientID)
+	for i, id := range s.clientOrder {
+		if id == clientID {
+			s.clientOrder = append(s.clientOrder[:i], s.clientOrder[i+1:]...)
+			break
+		}
+	}
+
+	if s.writerClientID == clientID {
+		s.writerClientID = ""
+	}
+
+	s.electWriter(&notify)
+
+	count := s.countActive()
+	for _, c := range s.clients {
+		if c.OnClientCount != nil {
+			cb := c.OnClientCount
+			cnt := count
+			notify.add(func() { cb(cnt) })
+		}
+	}
+
+	totalCount := len(s.clients)
+
+	s.clientsMu.Unlock()
+
+	notify.dispatch()
+
+	if totalCount > 0 {
+		s.recalculateSize()
+	}
+}
+
+// electWriter is the single centralized writer election function.
+// Must be called with clientsMu held. Batches notifications into notify.
+func (s *Session) electWriter(notify *notifications) {
+	// If current writer is still active, no-op
+	if s.writerClientID != "" {
+		if writer, exists := s.clients[s.writerClientID]; exists && writer.Activity == ClientActive {
+			return
+		}
+	}
+
+	oldWriterID := s.writerClientID
+	newWriterID := ""
+
+	// Find first active client in insertion order
+	for _, id := range s.clientOrder {
+		if c, exists := s.clients[id]; exists && c.Activity == ClientActive {
+			newWriterID = id
+			break
+		}
+	}
+
+	// Fallback: any client if no active ones
+	if newWriterID == "" {
+		for _, id := range s.clientOrder {
+			if _, exists := s.clients[id]; exists {
+				newWriterID = id
+				break
+			}
+		}
+	}
+
+	if newWriterID == oldWriterID {
+		return
+	}
+
+	s.writerClientID = newWriterID
+
+	// Notify old writer they lost access
+	if oldWriterID != "" {
+		if oldWriter, exists := s.clients[oldWriterID]; exists && oldWriter.OnWriteStateChange != nil {
+			cb := oldWriter.OnWriteStateChange
+			notify.add(func() { cb(false) })
+		}
+	}
+
+	// Notify new writer they gained access
+	if newWriterID != "" {
+		if newWriter, exists := s.clients[newWriterID]; exists && newWriter.OnWriteStateChange != nil {
+			cb := newWriter.OnWriteStateChange
+			notify.add(func() { cb(true) })
+		}
+	}
+}
+
+// CanWrite returns true if the specified client has write access
+func (s *Session) CanWrite(clientID string) bool {
+	s.clientsMu.RLock()
+	defer s.clientsMu.RUnlock()
+	return s.writerClientID == clientID
+}
+
+// ClientCount returns the number of connected clients
+func (s *Session) ClientCount() int {
+	s.clientsMu.RLock()
+	defer s.clientsMu.RUnlock()
+	return len(s.clients)
+}
+
+// countActive returns the number of active clients (must hold clientsMu)
+func (s *Session) countActive() int {
+	count := 0
+	for _, c := range s.clients {
+		if c.Activity == ClientActive {
+			count++
+		}
+	}
+	return count
+}
+
+// Minimum terminal dimensions to ensure usability
+const (
+	MinTerminalCols uint16 = 40
+	MinTerminalRows uint16 = 10
+)
+
+// recalculateSize sets terminal to the minimum dimensions across all active clients
+// This ensures content is formatted correctly for all connected screens (tmux strategy)
+func (s *Session) recalculateSize() {
+	s.clientsMu.RLock()
+
+	if len(s.clients) == 0 {
+		s.clientsMu.RUnlock()
+		return
+	}
+
+	// Find minimum dimensions across active clients
+	var minCols, minRows uint16 = 0xFFFF, 0xFFFF
+	for _, client := range s.clients {
+		if client.Activity == ClientActive {
+			if client.Cols < minCols {
+				minCols = client.Cols
+			}
+			if client.Rows < minRows {
+				minRows = client.Rows
+			}
+		}
+	}
+
+	// Enforce minimum dimensions for usability
+	if minCols < MinTerminalCols {
+		minCols = MinTerminalCols
+	}
+	if minRows < MinTerminalRows {
+		minRows = MinTerminalRows
+	}
+
+	if minCols == 0xFFFF || minRows == 0xFFFF {
+		s.clientsMu.RUnlock()
+		return
+	}
+
+	// Collect callbacks to notify (to call outside the lock)
+	var callbacks []func(cols, rows uint16)
+	for _, client := range s.clients {
+		if client.OnSizeChange != nil {
+			callbacks = append(callbacks, client.OnSizeChange)
+		}
+	}
+
+	s.clientsMu.RUnlock()
+
+	// Resize the PTY
+	s.Resize(minCols, minRows)
+
+	// Notify all clients of the new size
+	for _, cb := range callbacks {
+		cb(minCols, minRows)
+	}
+}
+
+// Broadcast sends data to all connected clients
+func (s *Session) Broadcast(data []byte) {
+	s.clientsMu.RLock()
+	defer s.clientsMu.RUnlock()
+
+	for _, client := range s.clients {
+		client.Writer(data)
+	}
+}
+
+// broadcastOutput reads from PTY and broadcasts to all clients
+func (s *Session) broadcastOutput() {
+	defer close(s.outputDone)
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := s.PTY.Read(buf)
+		if err != nil {
+			return
+		}
+		if n > 0 {
+			data := make([]byte, n)
+			copy(data, buf[:n])
+
+			// Hold clientsMu while writing to scrollback AND broadcasting
+			// This ensures atomic operation with RegisterClient
+			s.clientsMu.Lock()
+			s.scrollback.Write(data)
+			clientCount := len(s.clients)
+			for id, client := range s.clients {
+				if err := client.Writer(data); err != nil {
+					log.Printf("[broadcast] Error writing to client %s: %v", id, err)
+				}
+			}
+			log.Printf("[broadcast] Sent %d bytes to %d clients", n, clientCount)
+			s.clientsMu.Unlock()
+		}
+	}
+}
+
+// IsAttached returns whether any client is attached
 func (s *Session) IsAttached() bool {
+	return s.ClientCount() > 0
+}
+
+// Legacy Attach for compatibility - always succeeds if not closed
+func (s *Session) Attach() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.attached
+	return !s.closed
 }
+
+// Legacy Detach for compatibility - no-op, use RemoveClient instead
+func (s *Session) Detach() {}
 
 // Rename changes the session name
 func (s *Session) Rename(name string) {
@@ -350,10 +731,15 @@ func (s *Session) Scrollback() []byte {
 }
 
 func (s *Session) Resize(cols, rows uint16) error {
-	return pty.Setsize(s.PTY, &pty.Winsize{
+	err := pty.Setsize(s.PTY, &pty.Winsize{
 		Cols: cols,
 		Rows: rows,
 	})
+	if err == nil {
+		// Send SIGWINCH to notify shell of size change so it redraws
+		s.Redraw()
+	}
+	return err
 }
 
 // Redraw sends SIGWINCH to the shell to force a prompt redraw
@@ -363,15 +749,20 @@ func (s *Session) Redraw() {
 	}
 }
 
+// ExitChan returns a channel that's closed when the shell process exits
+func (s *Session) ExitChan() <-chan struct{} {
+	return s.exitChan
+}
+
+// ExitCode returns the exit code (valid after ExitChan is closed)
+func (s *Session) ExitCode() int {
+	return s.exitCode
+}
+
+// Wait blocks until the shell process exits and returns the exit code
 func (s *Session) Wait() (int, error) {
-	err := s.Cmd.Wait()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return exitErr.ExitCode(), nil
-		}
-		return -1, err
-	}
-	return 0, nil
+	<-s.exitChan
+	return s.exitCode, s.exitErr
 }
 
 // Reader returns an io.Reader for the PTY output

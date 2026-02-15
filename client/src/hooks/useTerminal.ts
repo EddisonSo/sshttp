@@ -1,16 +1,18 @@
-import { useEffect, useRef, useCallback, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useCallback, useState } from 'react'
 import { connectShell, ShellConnection, FileTransferCallbacks } from '../lib/ws'
 import type { XTermHandle } from '../components/XTerm'
 
 interface UseTerminalOptions {
   token: string
   sessionId?: string
+  isActive?: boolean
   onExit?: (code: number) => void
   onError?: (error: Error) => void
   onClose?: (reason?: string) => void
   onFileProgress?: (bytesUploaded: number, totalBytes: number) => void
   onFileComplete?: (filename: string) => void
   onFileError?: (error: string) => void
+  onSessionsChange?: () => void
 }
 
 interface FileUploadState {
@@ -20,12 +22,15 @@ interface FileUploadState {
   totalBytes: number
 }
 
-export function useTerminal({ token, sessionId, onExit, onError, onClose, onFileProgress, onFileComplete, onFileError }: UseTerminalOptions) {
+export function useTerminal({ token, sessionId, isActive = true, onExit, onError, onClose, onFileProgress, onFileComplete, onFileError, onSessionsChange }: UseTerminalOptions) {
   const termRef = useRef<XTermHandle>(null)
   const connRef = useRef<ShellConnection | null>(null)
+  const pendingDataRef = useRef<string[]>([]) // Buffer data until terminal is ready
   const [connected, setConnected] = useState(false)
   const [exitCode, setExitCode] = useState<number | null>(null)
   const [fileUpload, setFileUpload] = useState<FileUploadState | null>(null)
+  const [isWriter, setIsWriter] = useState(true) // Assume writer until told otherwise
+  const [clientCount, setClientCount] = useState(1)
 
   // Store callbacks in refs to avoid reconnection on callback changes
   const onExitRef = useRef(onExit)
@@ -34,12 +39,14 @@ export function useTerminal({ token, sessionId, onExit, onError, onClose, onFile
   const onFileProgressRef = useRef(onFileProgress)
   const onFileCompleteRef = useRef(onFileComplete)
   const onFileErrorRef = useRef(onFileError)
+  const onSessionsChangeRef = useRef(onSessionsChange)
   onExitRef.current = onExit
   onErrorRef.current = onError
   onCloseRef.current = onClose
   onFileProgressRef.current = onFileProgress
   onFileCompleteRef.current = onFileComplete
   onFileErrorRef.current = onFileError
+  onSessionsChangeRef.current = onSessionsChange
 
   // Connect to shell
   useEffect(() => {
@@ -47,7 +54,22 @@ export function useTerminal({ token, sessionId, onExit, onError, onClose, onFile
 
     const conn = connectShell(token, {
       onData: (data) => {
-        termRef.current?.write(data)
+        console.log('[useTerminal] onData:', data.length, 'bytes, termRef ready:', !!termRef.current, 'pending:', pendingDataRef.current.length)
+        if (termRef.current) {
+          // Flush any pending data first
+          if (pendingDataRef.current.length > 0) {
+            console.log('[useTerminal] Flushing', pendingDataRef.current.length, 'pending chunks')
+            for (const pending of pendingDataRef.current) {
+              termRef.current.write(pending)
+            }
+            pendingDataRef.current = []
+          }
+          termRef.current.write(data)
+        } else {
+          // Buffer data until terminal is ready
+          console.log('[useTerminal] Buffering data, terminal not ready')
+          pendingDataRef.current.push(data)
+        }
       },
       onExit: (code) => {
         setExitCode(code)
@@ -63,12 +85,43 @@ export function useTerminal({ token, sessionId, onExit, onError, onClose, onFile
         onCloseRef.current?.(reason)
       },
       onOpen: () => {
-        // Send initial size immediately on connection
-        const size = termRef.current?.fit()
-        if (size) {
-          conn.resize(size.cols, size.rows)
+        // Send initial size once terminal is ready and visible
+        // Hidden tabs (display:hidden) can't measure dimensions properly,
+        // so we skip the resize here and let the isActive useEffect handle it
+        const sendSize = (retries = 5) => {
+          const size = termRef.current?.fit()
+          if (size && size.cols > 0 && size.rows > 0) {
+            conn.resize(size.cols, size.rows)
+            termRef.current?.focus()
+            // Flush any data that arrived before terminal was ready
+            if (pendingDataRef.current.length > 0) {
+              for (const pending of pendingDataRef.current) {
+                termRef.current?.write(pending)
+              }
+              pendingDataRef.current = []
+            }
+          } else if (retries > 0) {
+            setTimeout(() => sendSize(retries - 1), 100)
+          }
+          // No fallback — if terminal isn't visible, the isActive effect
+          // will send the resize when the tab becomes active
         }
-        termRef.current?.focus()
+        sendSize()
+      },
+      onWriteStateChange: (writer) => {
+        setIsWriter(writer)
+      },
+      onSessionsChange: () => {
+        onSessionsChangeRef.current?.()
+      },
+      onResizeNotify: (cols, rows) => {
+        // Server is telling us the terminal size changed (tmux-style min dimensions)
+        // Resize our xterm to match so display is correct
+        console.log('[useTerminal] onResizeNotify:', cols, 'x', rows, 'termRef ready:', !!termRef.current)
+        termRef.current?.resize(cols, rows)
+      },
+      onClientCount: (count) => {
+        setClientCount(count)
       },
     }, sessionId)
 
@@ -78,8 +131,30 @@ export function useTerminal({ token, sessionId, onExit, onError, onClose, onFile
     return () => {
       conn.close()
       connRef.current = null
+      pendingDataRef.current = []
     }
   }, [token, sessionId])
+
+  // When tab becomes hidden, send 0x0 resize to exclude this client
+  // from the session's min-size calculation. The XTerm isActive effect
+  // will send proper dimensions when the tab becomes visible again.
+  // useLayoutEffect runs before paint, preventing a single-frame "Viewer Mode" flash
+  useLayoutEffect(() => {
+    if (isActive) {
+      // Optimistically assume writer to avoid a "Viewer Mode" flash during the
+      // debounce + RTT before the server re-confirms our write state.
+      // The server re-sends FrameWriteState when we transition from 0x0 to real dims,
+      // so a genuine viewer will be corrected.
+      setIsWriter(true)
+      return
+    }
+    // Cancel any pending debounced resize so it doesn't overwrite our 0x0
+    if (resizeTimeoutRef.current) {
+      clearTimeout(resizeTimeoutRef.current)
+      resizeTimeoutRef.current = null
+    }
+    connRef.current?.resize(0, 0)
+  }, [isActive])
 
   // Handle user input
   // Filter out terminal response sequences that shouldn't be sent as user input
@@ -160,6 +235,8 @@ export function useTerminal({ token, sessionId, onExit, onError, onClose, onFile
     connected,
     exitCode,
     fileUpload,
+    isWriter,
+    clientCount,
     handleData,
     handleResize,
     handleFileDrop,

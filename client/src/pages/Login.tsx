@@ -66,6 +66,8 @@ export default function Login() {
       } else if (err instanceof Error) {
         if (err.name === 'NotAllowedError') {
           setError('Authentication was cancelled or timed out')
+        } else if (err.name === 'UnknownError' || err.message.includes('transient')) {
+          setError('Authentication failed due to a temporary issue. Please try again.')
         } else {
           setError(err.message)
         }
