@@ -8,6 +8,7 @@ interface UseTerminalOptions {
   isActive?: boolean
   onExit?: (code: number) => void
   onError?: (error: Error) => void
+  onClose?: (reason?: string) => void
   onFileProgress?: (bytesUploaded: number, totalBytes: number) => void
   onFileComplete?: (filename: string) => void
   onFileError?: (error: string) => void
@@ -21,7 +22,7 @@ interface FileUploadState {
   totalBytes: number
 }
 
-export function useTerminal({ token, sessionId, isActive = true, onExit, onError, onFileProgress, onFileComplete, onFileError, onSessionsChange }: UseTerminalOptions) {
+export function useTerminal({ token, sessionId, isActive = true, onExit, onError, onClose, onFileProgress, onFileComplete, onFileError, onSessionsChange }: UseTerminalOptions) {
   const termRef = useRef<XTermHandle>(null)
   const connRef = useRef<ShellConnection | null>(null)
   const pendingDataRef = useRef<string[]>([]) // Buffer data until terminal is ready
@@ -34,12 +35,14 @@ export function useTerminal({ token, sessionId, isActive = true, onExit, onError
   // Store callbacks in refs to avoid reconnection on callback changes
   const onExitRef = useRef(onExit)
   const onErrorRef = useRef(onError)
+  const onCloseRef = useRef(onClose)
   const onFileProgressRef = useRef(onFileProgress)
   const onFileCompleteRef = useRef(onFileComplete)
   const onFileErrorRef = useRef(onFileError)
   const onSessionsChangeRef = useRef(onSessionsChange)
   onExitRef.current = onExit
   onErrorRef.current = onError
+  onCloseRef.current = onClose
   onFileProgressRef.current = onFileProgress
   onFileCompleteRef.current = onFileComplete
   onFileErrorRef.current = onFileError
@@ -77,8 +80,9 @@ export function useTerminal({ token, sessionId, isActive = true, onExit, onError
         setConnected(false)
         onErrorRef.current?.(err)
       },
-      onClose: () => {
+      onClose: (reason) => {
         setConnected(false)
+        onCloseRef.current?.(reason)
       },
       onOpen: () => {
         // Send initial size once terminal is ready and visible

@@ -16,6 +16,7 @@ interface Toast {
   id: number
   type: 'success' | 'error'
   message: string
+  persistent?: boolean
 }
 
 function TerminalTab({
@@ -27,6 +28,7 @@ function TerminalTab({
   isActive,
   onError,
   onExit,
+  onKicked,
   onFileComplete,
   onFileError,
   onSessionsChange,
@@ -39,6 +41,7 @@ function TerminalTab({
   isActive?: boolean
   onError: () => void
   onExit: (code: number) => void
+  onKicked?: () => void
   onFileComplete?: (filename: string) => void
   onFileError?: (error: string) => void
   onSessionsChange?: () => void
@@ -49,6 +52,11 @@ function TerminalTab({
     isActive,
     onExit,
     onError,
+    onClose: (reason) => {
+      if (reason === 'kicked by new connection') {
+        onKicked?.()
+      }
+    },
     onFileComplete,
     onFileError,
     onSessionsChange,
@@ -123,13 +131,15 @@ export default function Terminal() {
   const [draggedTab, setDraggedTab] = useState<string | null>(null)
   const [dragOverTab, setDragOverTab] = useState<string | null>(null)
 
-  const addToast = useCallback((type: 'success' | 'error', message: string) => {
+  const addToast = useCallback((type: 'success' | 'error', message: string, persistent?: boolean) => {
     const id = ++toastIdCounter
-    setToasts(prev => [...prev, { id, type, message }])
-    const duration = type === 'success' ? 3000 : 5000
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id))
-    }, duration)
+    setToasts(prev => [...prev, { id, type, message, persistent }])
+    if (!persistent) {
+      const duration = type === 'success' ? 3000 : 5000
+      setTimeout(() => {
+        setToasts(prev => prev.filter(t => t.id !== id))
+      }, duration)
+    }
   }, [])
 
   const handleFileComplete = useCallback((filename: string) => {
@@ -184,6 +194,10 @@ export default function Terminal() {
       console.error('Failed to refresh sessions:', err)
     }
   }, [token])
+
+  const handleKicked = useCallback(() => {
+    addToast('error', 'Session opened from another device', true)
+  }, [addToast])
 
   useEffect(() => {
     const storedToken = sessionStorage.getItem('accessToken')
@@ -665,6 +679,7 @@ export default function Terminal() {
                 isActive={activeTab === tab.id}
                 onError={handleError}
                 onExit={handleExit(tab.id)}
+                onKicked={handleKicked}
                 onFileComplete={handleFileComplete}
                 onFileError={handleFileError}
                 onSessionsChange={handleSessionsChange}

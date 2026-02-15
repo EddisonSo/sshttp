@@ -41,7 +41,7 @@ export interface ShellCallbacks {
   onData: (data: string) => void
   onExit: (code: number) => void
   onError: (error: Error) => void
-  onClose: () => void
+  onClose: (reason?: string) => void
   onOpen?: () => void
   onWriteStateChange?: (isWriter: boolean) => void
   onSessionsChange?: () => void
@@ -195,7 +195,7 @@ export function connectShell(token: string, callbacks: ShellCallbacks, sessionId
     console.log('[ws] WebSocket closed:', e.code, e.reason, 'wasClean:', e.wasClean)
     window.removeEventListener('beforeunload', handleBeforeUnload)
     if (!exited) {
-      callbacks.onClose()
+      callbacks.onClose(e.reason || undefined)
     }
     // Reject any pending file transfer
     if (fileTransferReject) {
