@@ -296,14 +296,20 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 
 	// Mutex for thread-safe WebSocket writes
 	var writeMu sync.Mutex
-	writeToClient := func(data []byte) error {
+	writeFrame := func(frame []byte) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
+		conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
+		err := conn.WriteMessage(websocket.BinaryMessage, frame)
+		conn.SetWriteDeadline(time.Time{})
+		return err
+	}
+	writeToClient := func(data []byte) error {
 		// Wrap data in stdout frame
 		frame := make([]byte, 1+len(data))
 		frame[0] = FrameStdout
 		copy(frame[1:], data)
-		return conn.WriteMessage(websocket.BinaryMessage, frame)
+		return writeFrame(frame)
 	}
 
 	// Track active file transfer
@@ -321,9 +327,7 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 		if isWriter {
 			writeState = 1
 		}
-		writeMu.Lock()
-		conn.WriteMessage(websocket.BinaryMessage, []byte{FrameWriteState, writeState})
-		writeMu.Unlock()
+		writeFrame([]byte{FrameWriteState, writeState})
 		if isWriter {
 			log.Printf("client %s promoted to writer for session %s", clientID, session.ID)
 		} else {
@@ -337,9 +341,7 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 		frame[0] = FrameResizeNotify
 		binary.BigEndian.PutUint16(frame[1:3], cols)
 		binary.BigEndian.PutUint16(frame[3:5], rows)
-		writeMu.Lock()
-		conn.WriteMessage(websocket.BinaryMessage, frame)
-		writeMu.Unlock()
+		writeFrame(frame)
 	}
 
 	// Callback when client count changes
@@ -347,9 +349,7 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 		frame := make([]byte, 3)
 		frame[0] = FrameClientCount
 		binary.BigEndian.PutUint16(frame[1:3], uint16(count))
-		writeMu.Lock()
-		conn.WriteMessage(websocket.BinaryMessage, frame)
-		writeMu.Unlock()
+		writeFrame(frame)
 	}
 
 	// On disconnect, remove client and cleanup

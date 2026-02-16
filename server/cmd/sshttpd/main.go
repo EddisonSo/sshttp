@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"crypto/tls"
 	"net/http"
 	"os"
 	"os/signal"
@@ -72,9 +73,13 @@ func main() {
 	log.Println("using embedded static files")
 
 	// Start HTTP server
+	// Disable HTTP/2 so WebSocket upgrades (which require HTTP/1.1) work
+	// without browser fallback delays. HTTP/2 auto-negotiation can cause
+	// browsers to wait >60s before falling back to HTTP/1.1 for WebSockets.
 	httpServer := &http.Server{
-		Addr:    cfg.Addr,
-		Handler: srv.Router(),
+		Addr:         cfg.Addr,
+		Handler:      srv.Router(),
+		TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
 	}
 
 	// Graceful shutdown
