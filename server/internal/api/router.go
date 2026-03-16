@@ -155,6 +155,8 @@ func (s *Server) Router() http.Handler {
 
 			// Customization
 			r.Get("/prefs", s.handleGetPrefs)
+			r.Get("/idle-timeout", s.handleGetIdleTimeout)
+			r.Post("/idle-timeout", s.handleSetIdleTimeout)
 
 			// Themes
 			r.Get("/themes", s.handleListThemes)

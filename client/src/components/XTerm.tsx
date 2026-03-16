@@ -170,6 +170,7 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
       fontSize: fontSize,
       fontWeight: '400',
       fontWeightBold: '700',
+      lineHeight: 1,
       allowProposedApi: true,
       scrollOnUserInput: true,
       theme: theme ? {
@@ -239,9 +240,16 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
     const initializeWithFont = () => {
       if (!terminalRef.current) return
 
-      // Skip WebGL addon - it has rendering bugs where content doesn't paint
-      // The built-in DOM renderer is more reliable
-      webglAddonRef.current = null
+      // Use WebGL renderer for better box-drawing character rendering
+      // (canvas renderer leaves sub-pixel gaps between rows, causing jagged lines)
+      try {
+        const webglAddon = new WebglAddon()
+        terminal.loadAddon(webglAddon)
+        webglAddonRef.current = webglAddon
+      } catch (e) {
+        console.warn('[XTerm] WebGL addon failed to load, falling back to canvas renderer:', e)
+        webglAddonRef.current = null
+      }
 
       requestAnimationFrame(() => {
         if (!containerRef.current || containerRef.current.offsetWidth === 0) return

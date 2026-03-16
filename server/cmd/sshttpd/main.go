@@ -95,7 +95,7 @@ func main() {
 		defer ticker.Stop()
 		for range ticker.C {
 			wa.CleanupExpiredSessions()
-			sm.CloseIdleSessions(time.Duration(cfg.SessionIdleTimeoutMins) * time.Minute)
+			sm.CloseIdleSessions(srv.GetSessionIdleTimeout())
 		}
 	}()
 

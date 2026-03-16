@@ -93,6 +93,11 @@ export interface ListFontsResponse {
 export interface UserPrefs {
   activeTheme: string
   activeFont: string
+  sessionIdleTimeoutMins: number
+}
+
+export interface IdleTimeoutResponse {
+  minutes: number
 }
 
 class ApiError extends Error {
@@ -214,6 +219,18 @@ export const api = {
   getPrefs: (token: string) =>
     request<UserPrefs>('/settings/prefs', {
       headers: { Authorization: `Bearer ${token}` },
+    }),
+
+  getIdleTimeout: (token: string) =>
+    request<IdleTimeoutResponse>('/settings/idle-timeout', {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+
+  setIdleTimeout: (token: string, minutes: number) =>
+    request<void>('/settings/idle-timeout', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ minutes }),
     }),
 
   // Themes

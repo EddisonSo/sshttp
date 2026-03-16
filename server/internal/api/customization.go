@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/eddison/sshttp/server/internal/middleware"
 )
@@ -28,21 +29,25 @@ func (s *Server) getPrefsFile() string {
 
 // Preferences stored in prefs.json
 type userPrefs struct {
-	ActiveTheme string `json:"activeTheme"`
-	ActiveFont  string `json:"activeFont"`
+	ActiveTheme            string `json:"activeTheme"`
+	ActiveFont             string `json:"activeFont"`
+	SessionIdleTimeoutMins int    `json:"sessionIdleTimeoutMins"`
 }
 
 func (s *Server) loadPrefs() (*userPrefs, error) {
 	data, err := os.ReadFile(s.getPrefsFile())
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &userPrefs{ActiveTheme: "Default", ActiveFont: "AdwaitaMono NF"}, nil
+			return &userPrefs{ActiveTheme: "Default", ActiveFont: "AdwaitaMono NF", SessionIdleTimeoutMins: 30}, nil
 		}
 		return nil, err
 	}
 	var prefs userPrefs
 	if err := json.Unmarshal(data, &prefs); err != nil {
-		return &userPrefs{ActiveTheme: "Default", ActiveFont: "AdwaitaMono NF"}, nil
+		return &userPrefs{ActiveTheme: "Default", ActiveFont: "AdwaitaMono NF", SessionIdleTimeoutMins: 30}, nil
+	}
+	if prefs.SessionIdleTimeoutMins == 0 {
+		prefs.SessionIdleTimeoutMins = 30
 	}
 	return &prefs, nil
 }
@@ -474,9 +479,61 @@ func (s *Server) handleSetActiveFont(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetPrefs(w http.ResponseWriter, r *http.Request) {
 	prefs, err := s.loadPrefs()
 	if err != nil {
-		prefs = &userPrefs{ActiveTheme: "Default", ActiveFont: "AdwaitaMono NF"}
+		prefs = &userPrefs{ActiveTheme: "Default", ActiveFont: "AdwaitaMono NF", SessionIdleTimeoutMins: 30}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(prefs)
+}
+
+// Idle timeout handlers
+
+func (s *Server) handleGetIdleTimeout(w http.ResponseWriter, r *http.Request) {
+	prefs, err := s.loadPrefs()
+	if err != nil {
+		prefs = &userPrefs{SessionIdleTimeoutMins: 30}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int{"minutes": prefs.SessionIdleTimeoutMins})
+}
+
+type setIdleTimeoutRequest struct {
+	Minutes int `json:"minutes"`
+}
+
+func (s *Server) handleSetIdleTimeout(w http.ResponseWriter, r *http.Request) {
+	var req setIdleTimeoutRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.Minutes < 1 || req.Minutes > 1440 {
+		http.Error(w, "minutes must be between 1 and 1440", http.StatusBadRequest)
+		return
+	}
+
+	prefs, err := s.loadPrefs()
+	if err != nil {
+		prefs = &userPrefs{ActiveTheme: "Default", ActiveFont: "AdwaitaMono NF", SessionIdleTimeoutMins: 30}
+	}
+	prefs.SessionIdleTimeoutMins = req.Minutes
+
+	if err := s.savePrefs(prefs); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// GetSessionIdleTimeout returns the current idle timeout duration from prefs,
+// falling back to the config value if prefs can't be read.
+func (s *Server) GetSessionIdleTimeout() time.Duration {
+	prefs, err := s.loadPrefs()
+	if err != nil || prefs.SessionIdleTimeoutMins == 0 {
+		return time.Duration(s.cfg.SessionIdleTimeoutMins) * time.Minute
+	}
+	return time.Duration(prefs.SessionIdleTimeoutMins) * time.Minute
 }

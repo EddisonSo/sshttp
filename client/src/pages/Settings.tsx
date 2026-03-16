@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, ApiError, KeyInfo } from '../lib/api'
 import {
@@ -63,6 +63,11 @@ export default function Settings() {
   const [fontsReady, setFontsReady] = useState(false)
   const fontInputRef = useRef<HTMLInputElement>(null)
 
+  // Idle timeout state
+  const [idleTimeout, setIdleTimeout] = useState(30)
+  const [idleTimeoutSaved, setIdleTimeoutSaved] = useState(false)
+  const idleTimeoutSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   // Preload fonts to ensure availability checks are accurate
   useEffect(() => {
     preloadBuiltinFonts().then(() => setFontsReady(true))
@@ -91,6 +96,10 @@ export default function Settings() {
       const fontsData = await loadFontsFromServer(token)
       setFonts(fontsData.fonts)
       setActiveFontState(fontsData.activeFont)
+
+      // Load idle timeout
+      const timeoutData = await api.getIdleTimeout(token)
+      setIdleTimeout(timeoutData.minutes)
     } catch (err) {
       console.error('Failed to load customization:', err)
     }
@@ -325,6 +334,25 @@ export default function Settings() {
     }
   }
 
+  const saveIdleTimeout = useCallback(async (minutes: number) => {
+    if (!token) return
+    try {
+      await api.setIdleTimeout(token, minutes)
+      setIdleTimeoutSaved(true)
+      if (idleTimeoutSaveTimer.current) clearTimeout(idleTimeoutSaveTimer.current)
+      idleTimeoutSaveTimer.current = setTimeout(() => setIdleTimeoutSaved(false), 2000)
+    } catch (err) {
+      console.error('Failed to save idle timeout:', err)
+    }
+  }, [token])
+
+  const handleIdleTimeoutChange = (minutes: number) => {
+    if (minutes < 1) minutes = 1
+    if (minutes > 1440) minutes = 1440
+    setIdleTimeout(minutes)
+    saveIdleTimeout(minutes)
+  }
+
   if (!token) return null
 
   return (
@@ -449,6 +477,52 @@ export default function Settings() {
               )}
             </>
           )}
+
+          {/* Session Timeout Section */}
+          <h2 className="mb-6 mt-12 text-2xl font-bold">Session Timeout</h2>
+          <div className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-secondary)] p-4">
+            <p className="mb-3 text-sm text-[var(--theme-fg-muted)]">
+              Sessions will automatically close after this period of inactivity. Range: 1 minute to 24 hours.
+            </p>
+            <div className="flex items-center gap-3 mb-3">
+              <input
+                type="number"
+                min={1}
+                max={1440}
+                value={idleTimeout}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10)
+                  if (!isNaN(val)) handleIdleTimeoutChange(val)
+                }}
+                className="w-24 rounded bg-[var(--theme-bg-tertiary)] px-3 py-2 text-[var(--theme-fg)] outline-none focus:ring-2 focus:ring-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+              />
+              <span className="text-sm text-[var(--theme-fg-muted)]">minutes</span>
+              {idleTimeoutSaved && (
+                <span className="text-sm text-green-400">Saved</span>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { label: '30m', value: 30 },
+                { label: '1h', value: 60 },
+                { label: '4h', value: 240 },
+                { label: '12h', value: 720 },
+                { label: '24h', value: 1440 },
+              ].map((preset) => (
+                <button
+                  key={preset.value}
+                  onClick={() => handleIdleTimeoutChange(preset.value)}
+                  className={`rounded px-3 py-1 text-sm transition ${
+                    idleTimeout === preset.value
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-[var(--theme-bg-tertiary)] text-[var(--theme-fg-muted)] hover:bg-[var(--theme-fg-muted)]/20'
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
 
           {/* Font Size Section */}
           <h2 className="mb-6 mt-12 text-2xl font-bold">Font Size</h2>
