@@ -100,6 +100,18 @@ export interface IdleTimeoutResponse {
   minutes: number
 }
 
+export interface FileEntry {
+  name: string
+  isDir: boolean
+  size: number
+  modTime: string
+}
+
+export interface ListFilesResponse {
+  path: string
+  entries: FileEntry[]
+}
+
 class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message)
@@ -214,6 +226,19 @@ export const api = {
       headers: { Authorization: `Bearer ${token}` },
       body: JSON.stringify({ id }),
     }),
+
+  listFiles: (token: string, sessionId: string, path?: string) => {
+    const params = new URLSearchParams({ sessionId })
+    if (path) params.set('path', path)
+    return request<ListFilesResponse>(`/shell/sessions/files?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+  },
+
+  getDownloadUrl: (token: string, sessionId: string, path: string) => {
+    const params = new URLSearchParams({ sessionId, path, token })
+    return `${API_BASE}/shell/sessions/file?${params.toString()}`
+  },
 
   // Customization
   getPrefs: (token: string) =>

@@ -141,6 +141,8 @@ func (s *Server) Router() http.Handler {
 			r.Post("/sessions", s.handleCreateSession)
 			r.Post("/sessions/rename", s.handleRenameSession)
 			r.Post("/sessions/delete", s.handleDeleteSession)
+			r.Get("/sessions/files", s.handleListFiles)
+			r.Get("/sessions/file", s.handleDownloadFile)
 			r.Get("/stream", s.handleShellStream)
 		})
 
