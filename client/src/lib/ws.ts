@@ -7,6 +7,7 @@ export const FrameType = {
   FILE_START: 0x10,
   FILE_CHUNK: 0x11,
   FILE_ACK: 0x12,
+  FILE_PASTE: 0x13,
   WRITE_STATE: 0x20,
   SESSIONS_CHANGE: 0x21,
   RESIZE_NOTIFY: 0x22,
@@ -34,6 +35,7 @@ export interface ShellConnection {
   send: (data: string) => void
   resize: (cols: number, rows: number) => void
   sendFile: (file: File, callbacks?: FileTransferCallbacks) => Promise<void>
+  sendPasteImage: (blob: Blob, ext: string, callbacks?: FileTransferCallbacks) => Promise<void>
   close: () => void
 }
 
@@ -301,11 +303,76 @@ export function connectShell(token: string, callbacks: ShellCallbacks, sessionId
     })
   }
 
+  const sendPasteImage = async (blob: Blob, ext: string, transferCallbacks?: FileTransferCallbacks): Promise<void> => {
+    if (ws.readyState !== WebSocket.OPEN) {
+      throw new Error('Not connected')
+    }
+    if (blob.size > MAX_FILE_SIZE) {
+      throw new Error('Image too large (max 100MB)')
+    }
+    if (!/^[a-zA-Z0-9]{1,5}$/.test(ext)) {
+      throw new Error('Invalid image extension')
+    }
+
+    fileTransferCallbacks = transferCallbacks || null
+    fileTransferBytesUploaded = 0
+    fileTransferTotalBytes = blob.size
+
+    return new Promise((resolve, reject) => {
+      fileTransferResolve = resolve
+      fileTransferReject = reject
+
+      // Send FILE_PASTE frame: [0x13][size:u32][ext_len:u8][ext:utf8]
+      const extBytes = new TextEncoder().encode(ext)
+      const startFrame = new Uint8Array(1 + 4 + 1 + extBytes.length)
+      startFrame[0] = FrameType.FILE_PASTE
+      const startView = new DataView(startFrame.buffer)
+      startView.setUint32(1, blob.size, false)
+      startFrame[5] = extBytes.length
+      startFrame.set(extBytes, 6)
+      ws.send(startFrame)
+
+      const reader = new FileReader()
+      let offset = 0
+
+      const sendNextChunk = () => {
+        if (offset >= blob.size) return
+        const chunkSize = Math.min(FILE_CHUNK_SIZE, blob.size - offset)
+        const slice = blob.slice(offset, offset + chunkSize)
+        reader.readAsArrayBuffer(slice)
+      }
+
+      reader.onload = () => {
+        if (!reader.result) return
+        const chunkData = new Uint8Array(reader.result as ArrayBuffer)
+        const chunkFrame = new Uint8Array(1 + 4 + chunkData.length)
+        chunkFrame[0] = FrameType.FILE_CHUNK
+        const chunkView = new DataView(chunkFrame.buffer)
+        chunkView.setUint32(1, offset, false)
+        chunkFrame.set(chunkData, 5)
+        ws.send(chunkFrame)
+
+        offset += chunkData.length
+        fileTransferBytesUploaded = offset
+        sendNextChunk()
+      }
+
+      reader.onerror = () => {
+        reject(new Error('Failed to read image'))
+        fileTransferCallbacks = null
+        fileTransferResolve = null
+        fileTransferReject = null
+      }
+
+      sendNextChunk()
+    })
+  }
+
   const close = () => {
     exited = true // Suppress error/close callbacks on intentional close
     window.removeEventListener('beforeunload', handleBeforeUnload)
     ws.close()
   }
 
-  return { send, resize, sendFile, close }
+  return { send, resize, sendFile, sendPasteImage, close }
 }

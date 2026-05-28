@@ -29,6 +29,7 @@ const (
 	FrameFileStart      byte = 0x10
 	FrameFileChunk      byte = 0x11
 	FrameFileAck        byte = 0x12
+	FrameFilePaste      byte = 0x13 // Clipboard image paste: save to temp dir, type path into PTY on completion
 	FrameWriteState     byte = 0x20 // Notifies client of write access: payload[0] = 1 (writer) or 0 (viewer)
 	FrameSessionsChange byte = 0x21 // Notifies client that session list has changed
 	FrameResizeNotify   byte = 0x22 // Notifies client of new terminal size: [cols:u16][rows:u16]
@@ -55,6 +56,20 @@ type fileTransfer struct {
 	received uint32
 	file     *os.File
 	path     string
+	isPaste  bool // If true, write path to PTY on completion (clipboard image paste)
+}
+
+// validatePasteExt checks that a clipboard image extension is safe to embed in a filename.
+func validatePasteExt(ext string) bool {
+	if len(ext) == 0 || len(ext) > 5 {
+		return false
+	}
+	for _, c := range ext {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 // validateFilename checks if a filename is safe for upload
@@ -551,6 +566,63 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 			log.Printf("file upload started: %s (%d bytes)", fileName, fileSize)
 			sendFileAck(conn, FileAckProgress, "")
 
+		case FrameFilePaste:
+			// Only the writer can paste (it injects text into the PTY)
+			if !session.CanWrite(clientID) {
+				sendFileAck(conn, FileAckError, "viewer cannot paste images")
+				continue
+			}
+
+			// Format: [size:u32][ext_len:u8][ext:utf8]
+			if len(payload) < 5 {
+				sendFileAck(conn, FileAckError, "invalid frame")
+				continue
+			}
+
+			// Cleanup any previous incomplete transfer
+			if activeTransfer != nil && activeTransfer.file != nil {
+				activeTransfer.file.Close()
+				os.Remove(activeTransfer.path)
+				activeTransfer = nil
+			}
+
+			fileSize := binary.BigEndian.Uint32(payload[0:4])
+			extLen := int(payload[4])
+			if len(payload) < 5+extLen {
+				sendFileAck(conn, FileAckError, "invalid frame")
+				continue
+			}
+			ext := string(payload[5 : 5+extLen])
+
+			if fileSize > MaxFileSize {
+				sendFileAck(conn, FileAckError, "image too large (max 100MB)")
+				continue
+			}
+			if !validatePasteExt(ext) {
+				sendFileAck(conn, FileAckError, "invalid extension")
+				continue
+			}
+
+			pastePath := filepath.Join(os.TempDir(), fmt.Sprintf("sshttp-paste-%d.%s", time.Now().UnixNano(), ext))
+			f, err := os.OpenFile(pastePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+			if err != nil {
+				log.Printf("create paste file error: %v", err)
+				sendFileAck(conn, FileAckError, "failed to create paste file")
+				continue
+			}
+
+			activeTransfer = &fileTransfer{
+				name:     filepath.Base(pastePath),
+				size:     fileSize,
+				received: 0,
+				file:     f,
+				path:     pastePath,
+				isPaste:  true,
+			}
+
+			log.Printf("paste upload started: %s (%d bytes)", pastePath, fileSize)
+			sendFileAck(conn, FileAckProgress, "")
+
 		case FrameFileChunk:
 			// Only the writer can upload files
 			if !session.CanWrite(clientID) {
@@ -598,8 +670,18 @@ func (s *Server) handleShellStream(w http.ResponseWriter, r *http.Request) {
 			// Check if transfer complete
 			if activeTransfer.received >= activeTransfer.size {
 				activeTransfer.file.Close()
-				log.Printf("file upload complete: %s", activeTransfer.name)
-				sendFileAck(conn, FileAckSuccess, activeTransfer.name)
+				ackMsg := activeTransfer.name
+				if activeTransfer.isPaste {
+					// Return the full path; the client pastes it through the
+					// terminal so it's wrapped in bracketed-paste markers and
+					// recognized by the foreground app (e.g. Claude Code) as an
+					// image paste rather than literal typed text.
+					ackMsg = activeTransfer.path
+					log.Printf("paste upload complete: %s", activeTransfer.path)
+				} else {
+					log.Printf("file upload complete: %s", activeTransfer.name)
+				}
+				sendFileAck(conn, FileAckSuccess, ackMsg)
 				activeTransfer = nil
 			} else {
 				// Send progress ACK

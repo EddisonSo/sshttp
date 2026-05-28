@@ -12,12 +12,14 @@ export interface XTermHandle {
   focus: () => void
   refresh: () => void
   resize: (cols: number, rows: number) => void
+  paste: (data: string) => void
 }
 
 interface XTermProps {
   onData?: (data: string) => void
   onResize?: (cols: number, rows: number) => void
   onFileDrop?: (files: File[]) => void
+  onPasteImage?: (blob: Blob, ext: string) => void
   theme?: TerminalTheme
   fontFamily?: string
   fontSize?: number
@@ -43,7 +45,7 @@ const DEFAULT_FONT_FAMILY = 'monospace'
 
 const DEFAULT_FONT_SIZE = 14
 
-const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDrop, theme, fontFamily, fontSize = DEFAULT_FONT_SIZE, isActive = true }, ref) => {
+const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDrop, onPasteImage, theme, fontFamily, fontSize = DEFAULT_FONT_SIZE, isActive = true }, ref) => {
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -158,6 +160,11 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
         terminalRef.current.refresh(0, terminalRef.current.rows - 1)
         forceRepaint()
       }
+    },
+    paste: (data: string) => {
+      // xterm.paste() wraps data in bracketed-paste markers when the foreground
+      // app enabled the mode, so it's delivered as a paste (not typed keystrokes).
+      terminalRef.current?.paste(data)
     },
   }))
 
@@ -342,6 +349,36 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
       }
     })
   }, [fontSize, onResize])
+
+  // Intercept clipboard image paste in capture phase so xterm.js doesn't
+  // also paste text data the clipboard might carry alongside the image.
+  // Note: the browser only fires `paste` for Ctrl+Shift+V / right-click paste;
+  // plain Ctrl+V is consumed by xterm.js as a control character.
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container || !onPasteImage) return
+
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          const blob = item.getAsFile()
+          if (!blob) continue
+          e.preventDefault()
+          e.stopPropagation()
+          const subtype = item.type.split('/')[1] || 'png'
+          const ext = subtype.split(';')[0].replace(/[^a-zA-Z0-9]/g, '').slice(0, 5) || 'png'
+          onPasteImage(blob, ext)
+          return
+        }
+      }
+    }
+
+    container.addEventListener('paste', handlePaste, true)
+    return () => container.removeEventListener('paste', handlePaste, true)
+  }, [onPasteImage])
 
   // Re-fit terminal when tab becomes active (visible)
   useEffect(() => {

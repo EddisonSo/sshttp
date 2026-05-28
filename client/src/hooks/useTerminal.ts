@@ -193,6 +193,44 @@ export function useTerminal({ token, sessionId, isActive = true, onExit, onError
     }, 50)
   }, [])
 
+  // Handle clipboard image paste - upload to server temp dir; server types path into PTY on completion
+  const handlePasteImage = useCallback(async (blob: Blob, ext: string) => {
+    if (!connRef.current) return
+    const displayName = `pasted-image.${ext}`
+    try {
+      setFileUpload({
+        uploading: true,
+        filename: displayName,
+        bytesUploaded: 0,
+        totalBytes: blob.size,
+      })
+
+      const callbacks: FileTransferCallbacks = {
+        onProgress: (bytesUploaded, totalBytes) => {
+          setFileUpload(prev => prev ? { ...prev, bytesUploaded } : null)
+          onFileProgressRef.current?.(bytesUploaded, totalBytes)
+        },
+        onComplete: (serverPath) => {
+          setFileUpload(null)
+          // Paste the server-side path through the terminal so xterm wraps it
+          // in bracketed-paste markers; the foreground app (e.g. Claude Code)
+          // then recognizes it as an image paste instead of literal text.
+          if (serverPath) termRef.current?.paste(serverPath)
+        },
+        onError: (error) => {
+          setFileUpload(null)
+          onFileErrorRef.current?.(error)
+        },
+      }
+
+      await connRef.current.sendPasteImage(blob, ext, callbacks)
+    } catch (err) {
+      setFileUpload(null)
+      const message = err instanceof Error ? err.message : 'Paste failed'
+      onFileErrorRef.current?.(message)
+    }
+  }, [])
+
   // Handle file drop - upload files sequentially
   const handleFileDrop = useCallback(async (files: File[]) => {
     if (!connRef.current || files.length === 0) return
@@ -240,5 +278,6 @@ export function useTerminal({ token, sessionId, isActive = true, onExit, onError
     handleData,
     handleResize,
     handleFileDrop,
+    handlePasteImage,
   }
 }
