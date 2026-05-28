@@ -19,6 +19,10 @@ type TokenManager struct {
 	blacklistMu sync.RWMutex
 }
 
+// DefaultUserID is the synthetic identity used for all sessions when auth is
+// disabled (config auth_enabled = false).
+const DefaultUserID = "default"
+
 type Claims struct {
 	UserID   string `json:"uid"`
 	Username string `json:"usr"`

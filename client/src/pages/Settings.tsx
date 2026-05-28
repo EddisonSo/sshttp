@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api, ApiError, KeyInfo } from '../lib/api'
+import { api, ApiError, KeyInfo, isAuthEnabled } from '../lib/api'
 import {
   isWebAuthnSupported,
   parseCreationOptions,
@@ -369,24 +369,28 @@ export default function Settings() {
               <path strokeLinecap="round" strokeLinejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" />
             </svg>
           </button>
-          <button
-            onClick={() => {
-              sessionStorage.removeItem('accessToken')
-              navigate('/login')
-            }}
-            className="rounded-lg p-2 text-[var(--theme-fg-muted)] transition hover:bg-[var(--theme-bg-tertiary)] hover:text-[var(--theme-fg)]"
-            title="Logout"
-          >
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9" />
-            </svg>
-          </button>
+          {isAuthEnabled() && (
+            <button
+              onClick={() => {
+                sessionStorage.removeItem('accessToken')
+                navigate('/login')
+              }}
+              className="rounded-lg p-2 text-[var(--theme-fg-muted)] transition hover:bg-[var(--theme-bg-tertiary)] hover:text-[var(--theme-fg)]"
+              title="Logout"
+            >
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 
       {/* Content */}
       <div className="flex-1 p-6">
         <div className="mx-auto max-w-2xl">
+          {isAuthEnabled() && (
+          <>
           <h2 className="mb-6 text-2xl font-bold">Passkeys</h2>
 
           {error && (
@@ -476,6 +480,8 @@ export default function Settings() {
                 </button>
               )}
             </>
+          )}
+          </>
           )}
 
           {/* Session Timeout Section */}

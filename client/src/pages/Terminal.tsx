@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import XTerm from '../components/XTerm'
 import FileBrowser from '../components/FileBrowser'
 import { useTerminal } from '../hooks/useTerminal'
-import { api } from '../lib/api'
+import { api, isAuthEnabled } from '../lib/api'
 import { getActiveTheme, loadThemesFromServer } from '../lib/themes'
 import { getActiveFontName, getFontFamily, getFontSize, loadFontsFromServer } from '../lib/fonts'
 import type { TerminalTheme } from '../lib/itermThemeParser'
@@ -641,15 +641,17 @@ export default function Terminal() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
             </svg>
           </button>
-          <button
-            onClick={handleLogout}
-            className="rounded-lg p-2 text-[var(--theme-fg-muted)] transition hover:bg-[var(--theme-bg)]/50 hover:text-[var(--theme-fg)]"
-            title="Logout"
-          >
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9" />
-            </svg>
-          </button>
+          {isAuthEnabled() && (
+            <button
+              onClick={handleLogout}
+              className="rounded-lg p-2 text-[var(--theme-fg-muted)] transition hover:bg-[var(--theme-bg)]/50 hover:text-[var(--theme-fg)]"
+              title="Logout"
+            >
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 

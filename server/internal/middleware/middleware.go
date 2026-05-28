@@ -27,10 +27,19 @@ const (
 	ClaimsKey contextKey = "claims"
 )
 
-// Auth middleware validates JWT tokens with IP binding
-func Auth(tm *auth.TokenManager) func(http.Handler) http.Handler {
+// Auth middleware validates JWT tokens with IP binding. When enabled is false,
+// it injects a synthetic identity and passes through, so every protected handler
+// can call GetClaims() unconditionally and get DefaultUserID in no-auth mode.
+func Auth(tm *auth.TokenManager, enabled bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !enabled {
+				claims := &auth.Claims{UserID: auth.DefaultUserID, Username: auth.DefaultUserID}
+				ctx := context.WithValue(r.Context(), ClaimsKey, claims)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+
 			token := extractToken(r)
 			if token == "" {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)

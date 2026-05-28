@@ -100,6 +100,17 @@ export interface IdleTimeoutResponse {
   minutes: number
 }
 
+export interface AppConfig {
+  authEnabled: boolean
+}
+
+// Cached after the first getConfig() call (done once at app boot, before any
+// page mounts), so pages can read the auth mode synchronously.
+let _authEnabled = true
+export function isAuthEnabled(): boolean {
+  return _authEnabled
+}
+
 export interface FileEntry {
   name: string
   isDir: boolean
@@ -142,6 +153,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  getConfig: async (): Promise<AppConfig> => {
+    const cfg = await request<AppConfig>('/config')
+    _authEnabled = cfg.authEnabled
+    return cfg
+  },
+
   registerInfo: (rid: string) =>
     request<RegisterInfoResponse>(`/register/info?rid=${encodeURIComponent(rid)}`),
 

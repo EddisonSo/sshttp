@@ -38,6 +38,9 @@ type Config struct {
 
 	// Session
 	SessionIdleTimeoutMins int
+
+	// Auth
+	AuthEnabled bool
 }
 
 func Load() *Config {
@@ -66,6 +69,7 @@ func loadOrCreateConfig(configPath, dataDir string) *Config {
 		"rp_origin":                 "https://localhost:4422",
 		"token_expiry_mins":         "15",
 		"session_idle_timeout_mins": "30",
+		"auth_enabled":              "true",
 	}
 
 	values := make(map[string]string)
@@ -96,6 +100,7 @@ func loadOrCreateConfig(configPath, dataDir string) *Config {
 		JWTSecret:              getOrCreateSecret(dataDir),
 		TokenExpiryMins:        parseInt(values["token_expiry_mins"], 15),
 		SessionIdleTimeoutMins: parseInt(values["session_idle_timeout_mins"], 30),
+		AuthEnabled:            parseBool(values["auth_enabled"], true),
 	}
 }
 
@@ -143,6 +148,9 @@ token_expiry_mins = 15
 
 # Shell session idle timeout in minutes
 session_idle_timeout_mins = 30
+
+# Require WebAuthn login. Set to false to run open with no authentication.
+auth_enabled = true
 `
 
 	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
@@ -176,6 +184,13 @@ func getOrCreateSecret(dataDir string) string {
 func parseInt(s string, defaultVal int) int {
 	if i, err := strconv.Atoi(s); err == nil {
 		return i
+	}
+	return defaultVal
+}
+
+func parseBool(s string, defaultVal bool) bool {
+	if b, err := strconv.ParseBool(strings.TrimSpace(s)); err == nil {
+		return b
 	}
 	return defaultVal
 }

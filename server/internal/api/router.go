@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"io/fs"
 	"net/http"
 	"os"
@@ -108,6 +109,13 @@ func (s *Server) SetEmbeddedFS(fsys fs.FS) {
 	s.embeddedFS = fsys
 }
 
+// handleConfig reports client-relevant server configuration. Unauthenticated so
+// the frontend can learn the auth mode before it has a token.
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"authEnabled": s.cfg.AuthEnabled})
+}
+
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 
@@ -118,25 +126,31 @@ func (s *Server) Router() http.Handler {
 
 	// API routes
 	r.Route("/v1", func(r chi.Router) {
-		// Registration (rate limited)
-		r.Route("/register", func(r chi.Router) {
-			r.Use(s.rateLimiter.Middleware)
-			r.Get("/info", s.handleRegisterInfo)
-			r.Post("/begin", s.handleRegisterBegin)
-			r.Post("/finish", s.handleRegisterFinish)
-		})
+		// App config (unauthenticated) — lets the client learn the auth mode at boot
+		r.Get("/config", s.handleConfig)
 
-		// Authentication (rate limited)
-		r.Route("/auth", func(r chi.Router) {
-			r.Use(s.rateLimiter.Middleware)
-			r.Post("/begin", s.handleAuthBegin)
-			r.Post("/finish", s.handleAuthFinish)
-			r.Post("/logout", s.handleLogout)
-		})
+		// Registration + authentication are only mounted when auth is enabled
+		if s.cfg.AuthEnabled {
+			// Registration (rate limited)
+			r.Route("/register", func(r chi.Router) {
+				r.Use(s.rateLimiter.Middleware)
+				r.Get("/info", s.handleRegisterInfo)
+				r.Post("/begin", s.handleRegisterBegin)
+				r.Post("/finish", s.handleRegisterFinish)
+			})
+
+			// Authentication (rate limited)
+			r.Route("/auth", func(r chi.Router) {
+				r.Use(s.rateLimiter.Middleware)
+				r.Post("/begin", s.handleAuthBegin)
+				r.Post("/finish", s.handleAuthFinish)
+				r.Post("/logout", s.handleLogout)
+			})
+		}
 
 		// Protected routes
 		r.Route("/shell", func(r chi.Router) {
-			r.Use(middleware.Auth(s.tokenManager))
+			r.Use(middleware.Auth(s.tokenManager, s.cfg.AuthEnabled))
 			r.Get("/sessions", s.handleListSessions)
 			r.Post("/sessions", s.handleCreateSession)
 			r.Post("/sessions/rename", s.handleRenameSession)
@@ -148,7 +162,7 @@ func (s *Server) Router() http.Handler {
 
 		// Settings (protected)
 		r.Route("/settings", func(r chi.Router) {
-			r.Use(middleware.Auth(s.tokenManager))
+			r.Use(middleware.Auth(s.tokenManager, s.cfg.AuthEnabled))
 			r.Get("/keys", s.handleListKeys)
 			r.Post("/keys/delete", s.handleDeleteKey)
 			r.Post("/keys/rename", s.handleRenameKey)
