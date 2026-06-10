@@ -239,6 +239,17 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
 
     window.addEventListener('resize', handleResize)
 
+    // Observe the container directly: layout changes that don't fire
+    // window.resize (scrollbars, panels, browser UI, late CSS/font layout)
+    // must still refit and inform the server, or the PTY keeps stale
+    // dimensions and full-screen apps draw garbage into scrollback.
+    let resizeObserverRaf = 0
+    const resizeObserver = new ResizeObserver(() => {
+      cancelAnimationFrame(resizeObserverRaf)
+      resizeObserverRaf = requestAnimationFrame(handleResize)
+    })
+    resizeObserver.observe(containerRef.current)
+
     // Wait for the specific font to be loaded before initializing WebGL addon and fitting
     // This ensures proper character width measurement
     const initialFontFamily = fontFamily || DEFAULT_FONT_FAMILY
@@ -273,6 +284,8 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
 
     return () => {
       window.removeEventListener('resize', handleResize)
+      resizeObserver.disconnect()
+      cancelAnimationFrame(resizeObserverRaf)
       terminal.dispose()
     }
   }, [onData, onResize])
@@ -326,14 +339,20 @@ const XTerm = forwardRef<XTermHandle, XTermProps>(({ onData, onResize, onFileDro
         // Trigger a resize to force recalculation of character metrics
         const { cols, rows } = terminalRef.current
         terminalRef.current.resize(cols, rows)
+        if (!containerRef.current || containerRef.current.offsetWidth === 0) return
         fitAddonRef.current.fit()
+        // New metrics change cols/rows — the server must learn the new size
+        // or the PTY keeps drawing for the old grid
+        if (onResize) {
+          onResize(terminalRef.current.cols, terminalRef.current.rows)
+        }
       })
     }
 
     // Wait for the specific font to be loaded before applying to terminal
     // This prevents xterm.js from measuring character widths with fallback fonts
     document.fonts.load(`400 ${fontSize}px "${primaryFont}"`).then(applyFont).catch(applyFont)
-  }, [fontFamily])
+  }, [fontFamily, onResize])
 
   // Handle font size changes after mount
   useEffect(() => {
