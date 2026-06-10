@@ -32,6 +32,19 @@ export function useTerminal({ token, sessionId, isActive = true, onExit, onError
   const [isWriter, setIsWriter] = useState(true) // Assume writer until told otherwise
   const [clientCount, setClientCount] = useState(1)
 
+  // Scrollback replay can contain stale terminal queries (DA1, CPR, DECRQM...)
+  // that make xterm re-respond; those answers would land as junk keystrokes at
+  // whatever is running. Suppress query responses for a short window after the
+  // server sends scrollback (which happens on our first non-zero resize), and
+  // pass them through afterwards so live apps can negotiate capabilities.
+  const suppressResponsesUntilRef = useRef(0)
+  const registeredRef = useRef(false)
+  const markRegistered = useCallback((cols: number, rows: number) => {
+    if (registeredRef.current || cols <= 0 || rows <= 0) return
+    registeredRef.current = true
+    suppressResponsesUntilRef.current = Date.now() + 2000
+  }, [])
+
   // Store callbacks in refs to avoid reconnection on callback changes
   const onExitRef = useRef(onExit)
   const onErrorRef = useRef(onError)
@@ -52,6 +65,7 @@ export function useTerminal({ token, sessionId, isActive = true, onExit, onError
   useEffect(() => {
     if (!token) return
 
+    registeredRef.current = false
     const conn = connectShell(token, {
       onData: (data) => {
         console.log('[useTerminal] onData:', data.length, 'bytes, termRef ready:', !!termRef.current, 'pending:', pendingDataRef.current.length)
@@ -92,6 +106,7 @@ export function useTerminal({ token, sessionId, isActive = true, onExit, onError
           const size = termRef.current?.fit()
           if (size && size.cols > 0 && size.rows > 0) {
             conn.resize(size.cols, size.rows)
+            markRegistered(size.cols, size.rows)
             termRef.current?.focus()
             // Flush any data that arrived before terminal was ready
             if (pendingDataRef.current.length > 0) {
@@ -157,8 +172,16 @@ export function useTerminal({ token, sessionId, isActive = true, onExit, onError
   }, [isActive])
 
   // Handle user input
-  // Filter out terminal response sequences that shouldn't be sent as user input
+  // During the post-replay window, filter out terminal response sequences:
+  // the replayed scrollback contains old queries that make xterm re-respond,
+  // and those stale answers would arrive as junk input. Outside the window,
+  // responses pass through so live apps get real answers to their queries
+  // (capability negotiation like DECRQM 2026, cursor position reports, etc.)
   const handleData = useCallback((data: string) => {
+    if (Date.now() >= suppressResponsesUntilRef.current) {
+      connRef.current?.send(data)
+      return
+    }
     // Filter out terminal query responses:
     // - DA1 responses: \e[?...c (e.g., \e[?1;2c)
     // - DA2 responses: \e[>...c
@@ -189,9 +212,10 @@ export function useTerminal({ token, sessionId, isActive = true, onExit, onError
     }
     resizeTimeoutRef.current = setTimeout(() => {
       connRef.current?.resize(cols, rows)
+      markRegistered(cols, rows)
       resizeTimeoutRef.current = null
     }, 50)
-  }, [])
+  }, [markRegistered])
 
   // Handle clipboard image paste - upload to server temp dir; server types path into PTY on completion
   const handlePasteImage = useCallback(async (blob: Blob, ext: string) => {
