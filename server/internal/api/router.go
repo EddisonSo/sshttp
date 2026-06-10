@@ -232,6 +232,12 @@ func (s *Server) serveStaticFiles(r chi.Router) {
 	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
+		// index.html must always revalidate, or browsers keep running a stale
+		// app bundle after deploys (hashed assets remain safely cacheable)
+		if path == "/" || path == "/index.html" {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+
 		// Try to serve the file directly
 		if useFilesystem {
 			filePath := filepath.Join(staticDir, path)
@@ -254,6 +260,7 @@ func (s *Server) serveStaticFiles(r chi.Router) {
 
 		// For SPA routes, serve index.html
 		if !strings.HasPrefix(path, "/v1/") && !hasFileExtension(path) {
+			w.Header().Set("Cache-Control", "no-cache")
 			if useFilesystem {
 				http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
 			} else {
