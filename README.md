@@ -147,6 +147,8 @@ All data is stored in `~/.sshttp/`:
 
 **TLS is required** for WebAuthn authentication to work. TLS is enabled automatically if both cert and key files exist at the configured paths.
 
+The certificate is re-read from disk whenever `tls_cert` or `tls_key` changes, so renewals (e.g. acme.sh `--install-cert` writing to those paths) take effect on the next TLS handshake with no restart and no dropped sessions.
+
 ## Architecture
 
 ```

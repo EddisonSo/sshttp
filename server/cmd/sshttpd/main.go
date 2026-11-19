@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/eddison/sshttp/server/internal/api"
 	"github.com/eddison/sshttp/server/internal/auth"
+	"github.com/eddison/sshttp/server/internal/certreload"
 	"github.com/eddison/sshttp/server/internal/config"
 	"github.com/eddison/sshttp/server/internal/mds"
 	"github.com/eddison/sshttp/server/internal/pty"
@@ -101,8 +103,15 @@ func main() {
 
 	// Start server (TLS if configured)
 	if cfg.TLSCert != "" && cfg.TLSKey != "" {
+		// Reload the cert from disk when it changes so renewals apply without a restart
+		reloader, err := certreload.New(cfg.TLSCert, cfg.TLSKey)
+		if err != nil {
+			log.Fatalf("failed to load TLS certificate: %v", err)
+		}
+		httpServer.TLSConfig = &tls.Config{GetCertificate: reloader.GetCertificate}
+
 		log.Printf("starting HTTPS server on %s", cfg.Addr)
-		if err := httpServer.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey); err != http.ErrServerClosed {
+		if err := httpServer.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}
 	} else {
